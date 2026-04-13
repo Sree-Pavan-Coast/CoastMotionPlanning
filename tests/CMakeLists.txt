@@ -88,3 +88,11 @@ target_compile_definitions(
     PRIVATE COAST_REPO_ROOT="${CMAKE_SOURCE_DIR}"
 )
 gtest_discover_tests(behavior_tree_planner_test)
+
+add_executable(planner_behavior_resolver_test planning/PlannerBehaviorResolverTest.cpp)
+target_link_libraries(planner_behavior_resolver_test PRIVATE gtest_main coast_motion_planning)
+target_compile_definitions(
+    planner_behavior_resolver_test
+    PRIVATE COAST_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
+gtest_discover_tests(planner_behavior_resolver_test)

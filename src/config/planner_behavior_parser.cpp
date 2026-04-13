@@ -67,7 +67,7 @@ PlannerBehaviorProfiles PlannerBehaviorParser::parse(const std::string& master_p
         }
         validateActiveLayers(active_layers, profile_name);
 
-        profiles.emplace(profile_name, profile_node);
+        profiles.emplace(profile_name, parseProfile(profile_node));
     }
 
     if (profiles.empty()) {
@@ -150,6 +150,63 @@ void PlannerBehaviorParser::validateActiveLayers(const YAML::Node& active_layers
                 "Behavior '" + profile_name + "' repeats active layer '" + layer_name + "'.");
         }
     }
+}
+
+planning::PlannerBehaviorProfile PlannerBehaviorParser::parseProfile(
+    const YAML::Node& profile_node) {
+    planning::PlannerBehaviorProfile profile;
+
+    const YAML::Node planner = profile_node["planner"];
+    profile.planner.max_planning_time_ms = planner["max_planning_time_ms"].as<int>();
+    profile.planner.xy_grid_resolution_m = planner["xy_grid_resolution_m"].as<double>();
+    profile.planner.yaw_grid_resolution_deg = planner["yaw_grid_resolution_deg"].as<double>();
+    profile.planner.step_size_m = planner["step_size_m"].as<double>();
+    profile.planner.weight_forward = planner["weight_forward"].as<double>();
+    profile.planner.weight_reverse = planner["weight_reverse"].as<double>();
+    profile.planner.weight_steer = planner["weight_steer"].as<double>();
+    profile.planner.weight_steer_change = planner["weight_steer_change"].as<double>();
+    profile.planner.analytic_expansion_max_length_m =
+        planner["analytic_expansion_max_length_m"].as<double>();
+    profile.planner.analytic_expansion_ratio =
+        planner["analytic_expansion_ratio"].as<double>();
+
+    const YAML::Node costmap = profile_node["costmap"];
+    profile.costmap.resolution_m = costmap["resolution_m"].as<double>();
+    profile.costmap.inflation_radius_m = costmap["inflation_radius_m"].as<double>();
+    profile.costmap.inscribed_radius_m = costmap["inscribed_radius_m"].as<double>();
+    profile.costmap.cost_scaling_factor = costmap["cost_scaling_factor"].as<double>();
+    profile.costmap.alpha_shape_alpha = costmap["alpha_shape_alpha"].as<double>();
+    profile.costmap.max_lane_cost = costmap["max_lane_cost"].as<double>();
+    profile.costmap.max_lane_half_width_m = costmap["max_lane_half_width_m"].as<double>();
+
+    const YAML::Node collision_checker = profile_node["collision_checker"];
+    profile.collision_checker.collision_mode =
+        collision_checker["collision_mode"].as<std::string>();
+    profile.collision_checker.lethal_threshold =
+        collision_checker["lethal_threshold"].as<double>();
+    profile.collision_checker.margin_m = collision_checker["margin_m"].as<double>();
+
+    const YAML::Node motion_primitives = profile_node["motion_primitives"];
+    profile.motion_primitives.num_angle_bins =
+        motion_primitives["num_angle_bins"].as<int>();
+    profile.motion_primitives.min_turning_radius_m =
+        motion_primitives["min_turning_radius_m"].as<double>();
+    profile.motion_primitives.max_steer_angle_rad =
+        motion_primitives["max_steer_angle_rad"].as<double>();
+
+    const YAML::Node non_holonomic_heuristic = profile_node["non_holonomic_heuristic"];
+    profile.non_holonomic_heuristic.lut_grid_size =
+        non_holonomic_heuristic["lut_grid_size"].as<int>();
+    profile.non_holonomic_heuristic.lut_cell_size_m =
+        non_holonomic_heuristic["lut_cell_size_m"].as<double>();
+    profile.non_holonomic_heuristic.hitch_angle_penalty_factor =
+        non_holonomic_heuristic["hitch_angle_penalty_factor"].as<double>();
+
+    for (const auto& layer_node : profile_node["active_layers"]) {
+        profile.active_layers.insert(layer_node.as<std::string>());
+    }
+
+    return profile;
 }
 
 } // namespace config

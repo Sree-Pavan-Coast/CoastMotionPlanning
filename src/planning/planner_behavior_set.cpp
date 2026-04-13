@@ -1,37 +1,27 @@
 #include "coastmotionplanning/planning/planner_behavior_set.hpp"
 
+#include <algorithm>
+#include <filesystem>
 #include <stdexcept>
 
-#include <yaml-cpp/yaml.h>
+#include "coastmotionplanning/config/planner_behavior_parser.hpp"
 
 namespace coastmotionplanning {
 namespace planning {
 
 PlannerBehaviorSet PlannerBehaviorSet::loadFromFile(const std::string& filepath) {
-    YAML::Node config;
-    try {
-        config = YAML::LoadFile(filepath);
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Failed to load planner behavior file: " + filepath +
-                                 ". Error: " + e.what());
-    }
-
-    const YAML::Node behaviors = config["behaviors"];
-    if (!behaviors || !behaviors.IsMap()) {
-        throw std::runtime_error(
-            "Planner behavior file missing a 'behaviors' map: " + filepath);
-    }
+    const std::filesystem::path behaviors_path(filepath);
+    const std::filesystem::path master_params_path =
+        behaviors_path.parent_path() / "master_params.yaml";
+    const auto profiles = config::PlannerBehaviorParser::parse(
+        master_params_path.string(), filepath);
 
     PlannerBehaviorSet behavior_set;
-    for (const auto& entry : behaviors) {
-        const std::string behavior_name = entry.first.as<std::string>("");
-        if (behavior_name.empty()) {
-            continue;
-        }
-        if (behavior_set.lookup_.insert(behavior_name).second) {
-            behavior_set.names_.push_back(behavior_name);
-        }
+    for (const auto& entry : profiles) {
+        behavior_set.names_.push_back(entry.first);
+        behavior_set.profiles_.emplace(entry.first, entry.second);
     }
+    std::sort(behavior_set.names_.begin(), behavior_set.names_.end());
 
     if (behavior_set.names_.empty()) {
         throw std::runtime_error(
@@ -42,7 +32,15 @@ PlannerBehaviorSet PlannerBehaviorSet::loadFromFile(const std::string& filepath)
 }
 
 bool PlannerBehaviorSet::contains(const std::string& behavior_name) const {
-    return lookup_.find(behavior_name) != lookup_.end();
+    return profiles_.find(behavior_name) != profiles_.end();
+}
+
+const PlannerBehaviorProfile& PlannerBehaviorSet::get(const std::string& behavior_name) const {
+    const auto it = profiles_.find(behavior_name);
+    if (it == profiles_.end()) {
+        throw std::runtime_error("Planner behavior '" + behavior_name + "' is not defined.");
+    }
+    return it->second;
 }
 
 } // namespace planning

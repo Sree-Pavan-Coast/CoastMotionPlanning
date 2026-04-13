@@ -123,7 +123,9 @@ add_library(${PROJECT_NAME} STATIC
     src/costs/holonomic_obstacles_heuristic.cpp
     src/costs/non_holonomic_heuristic.cpp
     src/costs/costmap_builder.cpp
+    src/planning/planner_behavior_profile.cpp
     src/planning/planner_behavior_set.cpp
+    src/planning/planner_behavior_resolver.cpp
     src/planning/behavior_tree_planner_orchestrator.cpp
 )
 

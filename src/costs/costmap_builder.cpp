@@ -42,8 +42,16 @@ grid_map::GridMap CostmapBuilder::build(const math::Pose2d& start,
     auto selection = selector.select(start, goal, all_zones_, config_.alpha_shape_alpha);
     logTiming("Zone selection + concave hull", t);
 
+    auto costmap = build(selection, goal);
+    logTiming("TOTAL BUILD TIME", total_start);
+    return costmap;
+}
+
+grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
+                                        const math::Pose2d& goal) {
+    auto t = Clock::now();
+
     // ---- Step 2: Create GridMap with geometry matching the search boundary ----
-    t = Clock::now();
     // Compute bounding box of the search boundary
     geometry::Box2d bbox;
     geometry::bg::envelope(selection.search_boundary, bbox);
@@ -132,7 +140,6 @@ grid_map::GridMap CostmapBuilder::build(const math::Pose2d& start,
     }
     logTiming("Combined cost layer", t);
 
-    logTiming("TOTAL BUILD TIME", total_start);
     return costmap_;
 }
 

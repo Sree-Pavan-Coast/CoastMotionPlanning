@@ -14,6 +14,8 @@
 namespace coastmotionplanning {
 namespace costs {
 
+struct ZoneSelectionResult;
+
 /// Orchestrates the building of all costmap layers for a single planning query.
 /// Call build() once per planning iteration with the current start/goal.
 class CostmapBuilder {
@@ -30,6 +32,9 @@ public:
     /// @param goal   Goal pose
     /// @return Fully populated GridMap with all 7 layers
     grid_map::GridMap build(const math::Pose2d& start, const math::Pose2d& goal);
+
+    /// Build the full costmap for a planning query using a precomputed zone selection.
+    grid_map::GridMap build(const ZoneSelectionResult& selection, const math::Pose2d& goal);
 
     /// Load a non-holonomic heuristic LUT from a binary file.
     /// @param filepath Path to the .bin file

@@ -77,6 +77,10 @@ add_executable(non_holonomic_heuristic_test costs/NonHolonomicHeuristicTest.cpp)
 target_link_libraries(non_holonomic_heuristic_test PRIVATE ${COSTS_LINK_LIBS})
 gtest_discover_tests(non_holonomic_heuristic_test)
 
+add_executable(dual_model_non_holonomic_heuristic_test costs/DualModelNonHolonomicHeuristicTest.cpp)
+target_link_libraries(dual_model_non_holonomic_heuristic_test PRIVATE ${COSTS_LINK_LIBS})
+gtest_discover_tests(dual_model_non_holonomic_heuristic_test)
+
 add_executable(costmap_builder_test costs/CostmapBuilderTest.cpp)
 target_link_libraries(costmap_builder_test PRIVATE ${COSTS_LINK_LIBS})
 gtest_discover_tests(costmap_builder_test)
@@ -96,3 +100,11 @@ target_compile_definitions(
     PRIVATE COAST_REPO_ROOT="${CMAKE_SOURCE_DIR}"
 )
 gtest_discover_tests(planner_behavior_resolver_test)
+
+add_executable(hybrid_a_star_planner_test planning/HybridAStarPlannerTest.cpp)
+target_link_libraries(hybrid_a_star_planner_test PRIVATE gtest_main coast_motion_planning)
+target_compile_definitions(
+    hybrid_a_star_planner_test
+    PRIVATE COAST_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
+gtest_discover_tests(hybrid_a_star_planner_test)

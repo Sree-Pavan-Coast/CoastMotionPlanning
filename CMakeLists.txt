@@ -12,11 +12,33 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(FetchContent)
+
 # Find Boost
 find_package(Boost REQUIRED)
+find_package(ompl CONFIG QUIET
+    HINTS
+        /opt/homebrew/opt/ompl/share/ompl/cmake
+        /opt/homebrew/Cellar/ompl/1.7.0_1/share/ompl/cmake
+)
+
+if(NOT ompl_FOUND)
+    FetchContent_Declare(
+        ompl
+        GIT_REPOSITORY https://github.com/ompl/ompl.git
+        GIT_TAG        1.7.0
+    )
+    set(OMPL_BUILD_DEMOS OFF CACHE BOOL "" FORCE)
+    set(OMPL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(OMPL_BUILD_PYBINDINGS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(ompl)
+endif()
+
+if(TARGET ompl AND NOT TARGET ompl::ompl)
+    add_library(ompl::ompl ALIAS ompl)
+endif()
 
 # Find yaml-cpp via FetchContent since it's missing on system
-include(FetchContent)
 FetchContent_Declare(
     yaml-cpp
     GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
@@ -33,7 +55,7 @@ FetchContent_Declare(
     GIT_TAG        3.4.0
 )
 FetchContent_GetProperties(eigen)
-if(NOT eigen_POPULATED)
+if(NOT TARGET Eigen3::Eigen AND NOT eigen_POPULATED)
     FetchContent_Populate(eigen)
     add_library(Eigen3::Eigen INTERFACE IMPORTED)
     target_include_directories(Eigen3::Eigen INTERFACE ${eigen_SOURCE_DIR})
@@ -122,10 +144,12 @@ add_library(${PROJECT_NAME} STATIC
     src/costs/lane_centerline_layer.cpp
     src/costs/holonomic_obstacles_heuristic.cpp
     src/costs/non_holonomic_heuristic.cpp
+    src/costs/dual_model_non_holonomic_heuristic.cpp
     src/costs/costmap_builder.cpp
     src/planning/planner_behavior_profile.cpp
     src/planning/planner_behavior_set.cpp
     src/planning/planner_behavior_resolver.cpp
+    src/planning/hybrid_a_star_planner.cpp
     src/planning/behavior_tree_planner_orchestrator.cpp
 )
 
@@ -140,6 +164,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     Boost::boost 
     yaml-cpp::yaml-cpp
     grid_map_core
+    ompl::ompl
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE behaviortree_cpp)
 

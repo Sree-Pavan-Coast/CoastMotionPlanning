@@ -22,6 +22,8 @@ public:
     // Computes orientation between consecutive points and stores them as Pose2d
     void addLaneFromPoints(const std::vector<geometry::Point2d>& points);
 
+    std::string getDefaultPlannerBehavior() const override { return "primary_profile"; }
+
     /// Track road zones activate: static_obstacles, inflation, lane_centerline_cost,
     /// holonomic heuristic. Lane centerline biases the robot toward lane centers.
     std::vector<std::string> getActiveLayers() const override {

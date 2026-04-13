@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root BTCPP_format="4" main_tree_to_execute="PlannerBehaviorTree">
+  <BehaviorTree ID="ResolvePreferredProfile">
+    <Fallback name="resolve_preferred_profile">
+      <Sequence name="tight_maneuver_prefers_parking">
+        <IsTightManeuver />
+        <SetPreferredProfile profile="parking_profile" />
+      </Sequence>
+      <Sequence name="goal_zone_hint">
+        <HasGoalAssignedBehavior />
+        <UseGoalAssignedBehavior />
+      </Sequence>
+      <Sequence name="start_zone_hint">
+        <HasStartAssignedBehavior />
+        <UseStartAssignedBehavior />
+      </Sequence>
+      <Sequence name="goal_main_road_defaults_to_primary">
+        <GoalZoneTypeEquals zone_type="TrackMainRoad" />
+        <SetPreferredProfile profile="primary_profile" />
+      </Sequence>
+      <Sequence name="goal_maneuvering_defaults_to_parking">
+        <GoalZoneTypeEquals zone_type="ManeuveringZone" />
+        <SetPreferredProfile profile="parking_profile" />
+      </Sequence>
+      <SetPreferredProfile profile="primary_profile" />
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="PlannerBehaviorTree">
+    <Sequence name="plan_request">
+      <SubTree ID="ResolvePreferredProfile" />
+      <Fallback name="plan_with_relaxed_retry">
+        <RunPlanningAttempt profile="{preferred_profile}" />
+        <Sequence name="retry_relaxed">
+          <CanRetryWithRelaxed />
+          <RunPlanningAttempt profile="relaxed_profile" />
+        </Sequence>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+</root>

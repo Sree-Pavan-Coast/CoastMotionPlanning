@@ -80,3 +80,11 @@ gtest_discover_tests(non_holonomic_heuristic_test)
 add_executable(costmap_builder_test costs/CostmapBuilderTest.cpp)
 target_link_libraries(costmap_builder_test PRIVATE ${COSTS_LINK_LIBS})
 gtest_discover_tests(costmap_builder_test)
+
+add_executable(behavior_tree_planner_test planning/BehaviorTreePlannerTest.cpp)
+target_link_libraries(behavior_tree_planner_test PRIVATE gtest_main coast_motion_planning)
+target_compile_definitions(
+    behavior_tree_planner_test
+    PRIVATE COAST_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
+gtest_discover_tests(behavior_tree_planner_test)

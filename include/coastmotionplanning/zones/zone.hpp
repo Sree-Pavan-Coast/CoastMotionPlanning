@@ -25,10 +25,17 @@ public:
     void setPlannerBehavior(const std::optional<std::string>& planner_behavior) {
         planner_behavior_ = planner_behavior;
     }
+    bool hasExplicitPlannerBehavior() const { return planner_behavior_.has_value(); }
+    std::string getResolvedPlannerBehavior() const;
 
     // =========================================================================
     // Zone behavior API (override in subclasses for zone-specific behavior)
     // =========================================================================
+
+    /// Returns the built-in planner behavior for this zone type.
+    /// This is used whenever the YAML does not specify an explicit behavior or
+    /// when the YAML explicitly requests "default".
+    virtual std::string getDefaultPlannerBehavior() const = 0;
 
     /// Returns the costmap layer names that this zone type activates.
     /// The CostmapBuilder will only build these layers for cells inside this zone.

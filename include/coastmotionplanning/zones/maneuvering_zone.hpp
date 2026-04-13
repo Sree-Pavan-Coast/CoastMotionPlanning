@@ -15,6 +15,8 @@ public:
 
     ManeuveringZone(const geometry::Polygon2d& polygon, const std::optional<std::string>& name = std::nullopt);
 
+    std::string getDefaultPlannerBehavior() const override { return "parking_profile"; }
+
     /// Maneuvering zones activate: static_obstacles, inflation, holonomic heuristic.
     /// No lane centerline cost (free maneuvering in any direction).
     std::vector<std::string> getActiveLayers() const override {

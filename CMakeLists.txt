@@ -84,6 +84,20 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
+# Fetch BehaviorTree.CPP for planner behavior orchestration
+FetchContent_Declare(
+    behaviortree_cpp
+    GIT_REPOSITORY https://github.com/BehaviorTree/BehaviorTree.CPP.git
+    GIT_TAG        4.8.2
+)
+set(BTCPP_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BTCPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(BTCPP_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BTCPP_GROOT_INTERFACE OFF CACHE BOOL "" FORCE)
+set(BTCPP_SQLITE_LOGGING OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(behaviortree_cpp)
+
 enable_testing()
 
 # Define the static library
@@ -109,6 +123,8 @@ add_library(${PROJECT_NAME} STATIC
     src/costs/holonomic_obstacles_heuristic.cpp
     src/costs/non_holonomic_heuristic.cpp
     src/costs/costmap_builder.cpp
+    src/planning/planner_behavior_set.cpp
+    src/planning/behavior_tree_planner_orchestrator.cpp
 )
 
 # Specify the include directories for the target
@@ -123,6 +139,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     yaml-cpp::yaml-cpp
     grid_map_core
 )
+target_link_libraries(${PROJECT_NAME} PRIVATE behaviortree_cpp)
 
 # Optional: Add compiler warnings for high quality code
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

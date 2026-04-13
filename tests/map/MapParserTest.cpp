@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
-#include "coastmotionplanning/map/map_parser.hpp"
+
 #include <fstream>
+#include <optional>
+
+#include "coastmotionplanning/map/map_parser.hpp"
 
 using namespace coastmotionplanning::map;
 
@@ -106,6 +109,25 @@ protected:
                 << "      - [49.3175, -122.3958]\n";
         ofs_inv.close();
 
+        std::ofstream ofs_default("default_behavior_map.yaml");
+        ofs_default << "maps:\n"
+                    << "  name: \"Default Behavior Map\"\n"
+                    << "zones:\n"
+                    << "  - name: \"default_track\"\n"
+                    << "    type: \"TrackMainRoad\"\n"
+                    << "    planner_behavior: \"default\"\n"
+                    << "    coordinate_type: \"world\"\n"
+                    << "    polygon:\n"
+                    << "      - [0.0, 0.0]\n"
+                    << "      - [10.0, 0.0]\n"
+                    << "  - name: \"implicit_default_maneuvering\"\n"
+                    << "    type: \"ManeuveringZone\"\n"
+                    << "    coordinate_type: \"world\"\n"
+                    << "    polygon:\n"
+                    << "      - [20.0, 0.0]\n"
+                    << "      - [30.0, 0.0]\n";
+        ofs_default.close();
+
         std::ofstream ofs_dup("duplicate_zone_map.yaml");
         ofs_dup << "maps:\n"
                 << "  name: \"Duplicate Zone Map\"\n"
@@ -144,6 +166,7 @@ protected:
         std::remove("scaled_lat_lon_map.yaml");
         std::remove("valid_long_lat_map.yaml");
         std::remove("invalid_map.yaml");
+        std::remove("default_behavior_map.yaml");
         std::remove("duplicate_zone_map.yaml");
         std::remove("legacy_id_map.yaml");
     }
@@ -164,7 +187,7 @@ TEST_F(MapParserTest, ThrowsOnDeprecatedZoneId) {
 TEST_F(MapParserTest, ConvertsLatLonToWorld) {
     auto zones = MapParser::parse("valid_lat_lon_map.yaml");
     ASSERT_EQ(zones.size(), 1);
-    
+
     auto polygon = zones[0]->getPolygon();
     ASSERT_EQ(polygon.outer().size(), 2);
 
@@ -172,6 +195,7 @@ TEST_F(MapParserTest, ConvertsLatLonToWorld) {
     EXPECT_NEAR(polygon.outer()[0].x(), 0.0, 1e-6);
     EXPECT_NEAR(polygon.outer()[0].y(), 0.0, 1e-6);
     EXPECT_EQ(zones[0]->getPlannerBehavior().value_or(""), "parking_profile");
+    EXPECT_EQ(zones[0]->getResolvedPlannerBehavior(), "parking_profile");
 
     // Point 2 is North of point 1, check if y is positive
     EXPECT_GT(polygon.outer()[1].y(), 0.0);
@@ -189,6 +213,7 @@ TEST_F(MapParserTest, KeepsWorldCoordinatesWithoutGeographicOrigin) {
     EXPECT_DOUBLE_EQ(polygon.outer()[1].x(), 3.0);
     EXPECT_DOUBLE_EQ(polygon.outer()[1].y(), 4.0);
     EXPECT_EQ(zones[0]->getPlannerBehavior().value_or(""), "primary_profile");
+    EXPECT_EQ(zones[0]->getResolvedPlannerBehavior(), "primary_profile");
 }
 
 TEST_F(MapParserTest, ParsesMultipleLanesForTrackRoadZone) {
@@ -236,4 +261,17 @@ TEST_F(MapParserTest, ConvertsLongLatToWorld) {
 
 TEST_F(MapParserTest, ThrowsOnFileMissing) {
     EXPECT_THROW(MapParser::parse("non_existent.yaml"), std::runtime_error);
+}
+
+TEST_F(MapParserTest, UsesZoneTypeDefaultWhenBehaviorIsDefaultOrMissing) {
+    auto zones = MapParser::parse("default_behavior_map.yaml");
+    ASSERT_EQ(zones.size(), 2);
+
+    EXPECT_FALSE(zones[0]->hasExplicitPlannerBehavior());
+    EXPECT_EQ(zones[0]->getPlannerBehavior(), std::nullopt);
+    EXPECT_EQ(zones[0]->getResolvedPlannerBehavior(), "primary_profile");
+
+    EXPECT_FALSE(zones[1]->hasExplicitPlannerBehavior());
+    EXPECT_EQ(zones[1]->getPlannerBehavior(), std::nullopt);
+    EXPECT_EQ(zones[1]->getResolvedPlannerBehavior(), "parking_profile");
 }

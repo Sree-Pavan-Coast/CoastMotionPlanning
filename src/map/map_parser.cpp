@@ -7,6 +7,18 @@
 namespace coastmotionplanning {
 namespace map {
 
+namespace {
+
+std::optional<std::string> parsePlannerBehaviorOverride(const YAML::Node& zone_node) {
+    const std::string planner_behavior_name = zone_node["planner_behavior"].as<std::string>("");
+    if (planner_behavior_name.empty() || planner_behavior_name == "default") {
+        return std::nullopt;
+    }
+    return planner_behavior_name;
+}
+
+} // namespace
+
 std::vector<std::shared_ptr<zones::Zone>> MapParser::parse(const std::string& filepath) {
     YAML::Node config;
     try {
@@ -29,7 +41,6 @@ std::vector<std::shared_ptr<zones::Zone>> MapParser::parse(const std::string& fi
         for (const auto& zone_node : config["zones"]) {
             std::string type = zone_node["type"].as<std::string>("");
             std::string name = zone_node["name"].as<std::string>("");
-            std::string planner_behavior_name = zone_node["planner_behavior"].as<std::string>("");
             const std::string zone_label = name.empty() ? "<unnamed>" : name;
             const CoordinateType coordinate_type = parseCoordinateType(zone_node, zone_label);
             if (coordinate_type != CoordinateType::WORLD) {
@@ -52,8 +63,8 @@ std::vector<std::shared_ptr<zones::Zone>> MapParser::parse(const std::string& fi
                 polygon.outer().push_back(p);
             }
 
-            std::optional<std::string> planner_behavior =
-                planner_behavior_name.empty() ? std::nullopt : std::make_optional(planner_behavior_name);
+            const std::optional<std::string> planner_behavior =
+                parsePlannerBehaviorOverride(zone_node);
 
             if (type == "ManeuveringZone") {
                 auto zone = std::make_shared<zones::ManeuveringZone>(polygon, name);

@@ -2,7 +2,8 @@
 # - "world": points are [x, y]
 # - "lat_long": points are [latitude, longitude]
 # - "long_lat": points are [longitude, latitude]
-# planner_behavior should reference a behavior name from configs/planner_behaviors.yaml
+# planner_behavior may reference a behavior name from configs/planner_behaviors.yaml
+# or use "default" / omit the field to use the built-in default for the zone type
 maps:
   name: "Largo Map"
   

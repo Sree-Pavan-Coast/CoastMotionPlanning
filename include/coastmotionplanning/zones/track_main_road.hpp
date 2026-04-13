@@ -16,12 +16,11 @@ public:
 
     TrackMainRoad(const geometry::Polygon2d& polygon, const std::optional<std::string>& name = std::nullopt);
 
-    const std::vector<math::Pose2d>& getLaneWaypoints() const { return lane_waypoints_; }
-    void setLaneWaypoints(const std::vector<math::Pose2d>& waypoints) { lane_waypoints_ = waypoints; }
-    void addLaneWaypoint(const math::Pose2d& waypoint) { lane_waypoints_.push_back(waypoint); }
+    const std::vector<std::vector<math::Pose2d>>& getLanes() const { return lanes_; }
+    void setLanes(const std::vector<std::vector<math::Pose2d>>& lanes) { lanes_ = lanes; }
 
     // Computes orientation between consecutive points and stores them as Pose2d
-    void setLaneWaypointsFromPoints(const std::vector<geometry::Point2d>& points);
+    void addLaneFromPoints(const std::vector<geometry::Point2d>& points);
 
     /// Track road zones activate: static_obstacles, inflation, lane_centerline_cost,
     /// holonomic heuristic. Lane centerline biases the robot toward lane centers.
@@ -38,7 +37,7 @@ public:
     bool isReverseAllowed() const override { return false; }
 
 private:
-    std::vector<math::Pose2d> lane_waypoints_;
+    std::vector<std::vector<math::Pose2d>> lanes_;
 };
 
 } // namespace zones

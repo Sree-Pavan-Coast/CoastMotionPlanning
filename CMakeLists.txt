@@ -88,6 +88,8 @@ enable_testing()
 
 # Define the static library
 add_library(${PROJECT_NAME} STATIC
+    src/config/planner_behavior_parser.cpp
+    src/config/robots_parser.cpp
     src/math/pose2d.cpp
     src/zones/zone.cpp
     src/zones/maneuvering_zone.cpp

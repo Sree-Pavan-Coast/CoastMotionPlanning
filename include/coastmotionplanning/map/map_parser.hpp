@@ -29,7 +29,8 @@ public:
      * 
      * @param filepath Path to the YAML file.
      * @return std::vector<std::shared_ptr<zones::Zone>> The parsed zones.
-     * @throws std::runtime_error If the file or required metadata for geographic coordinates is missing.
+     * @throws std::runtime_error If the file is invalid, zone names collide, or required metadata for
+     * geographic coordinates is missing.
      */
     static std::vector<std::shared_ptr<zones::Zone>> parse(const std::string& filepath);
 

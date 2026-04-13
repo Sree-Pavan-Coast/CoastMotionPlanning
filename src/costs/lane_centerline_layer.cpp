@@ -22,7 +22,7 @@ void LaneCenterlineLayer::build(
     // Collect all TrackMainRoad zones and their lane centerlines
     struct TrackInfo {
         std::shared_ptr<zones::TrackMainRoad> track;
-        geometry::LineString2d centerline;
+        std::vector<geometry::LineString2d> centerlines;
         grid_map::Polygon gm_polygon;
     };
 
@@ -31,16 +31,19 @@ void LaneCenterlineLayer::build(
         auto track = std::dynamic_pointer_cast<zones::TrackMainRoad>(z);
         if (!track) continue;
 
-        const auto& waypoints = track->getLaneWaypoints();
-        if (waypoints.size() < 2) continue;
-
         TrackInfo info;
         info.track = track;
 
-        // Build LineString from waypoints
-        for (const auto& wp : waypoints) {
-            info.centerline.push_back(geometry::Point2d(wp.x, wp.y));
+        for (const auto& lane : track->getLanes()) {
+            if (lane.size() < 2) continue;
+
+            geometry::LineString2d centerline;
+            for (const auto& wp : lane) {
+                centerline.push_back(geometry::Point2d(wp.x, wp.y));
+            }
+            info.centerlines.push_back(std::move(centerline));
         }
+        if (info.centerlines.empty()) continue;
 
         // Build grid_map polygon for iteration
         const auto& outer = track->getPolygon().outer();
@@ -69,7 +72,10 @@ void LaneCenterlineLayer::build(
             costmap.getPosition(*it, pos);
 
             geometry::Point2d cell_pt(pos.x(), pos.y());
-            double dist = geometry::bg::distance(cell_pt, info.centerline);
+            double dist = std::numeric_limits<double>::infinity();
+            for (const auto& centerline : info.centerlines) {
+                dist = std::min(dist, geometry::bg::distance(cell_pt, centerline));
+            }
 
             // Normalize: 0 at centerline, max_lane_cost at max_half_width
             double normalized = std::min(dist / max_half_width, 1.0);

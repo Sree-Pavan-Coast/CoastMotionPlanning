@@ -1,7 +1,7 @@
 # ==============================================================================
 # Master Parameters (Reference)
 # This file serves as the baseline parameter definitions for all subsystems.
-# Per-behavior overrides go in planner_behaviors.yaml.
+# Every behavior profile in planner_behaviors.yaml must repeat this full schema.
 # ==============================================================================
 
 # ---- Planner (Hybrid A*) ----

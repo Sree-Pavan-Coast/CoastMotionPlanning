@@ -1,7 +1,7 @@
 # ==============================================================================
 # Planner Behaviors
 # Each behavior is a profile/variant of the master_params.yaml settings.
-# Only override parameters that differ from the master reference.
+# Each profile must repeat the full master_params.yaml schema.
 # ==============================================================================
 #
 # Available Costmap Layers (for active_layers list):
@@ -29,10 +29,28 @@ behaviors:
       weight_reverse: 2.5
       weight_steer: 0.5
       weight_steer_change: 1.5
+      analytic_expansion_max_length_m: 20.0
+      analytic_expansion_ratio: 0.35
     costmap:
+      resolution_m: 0.1
       inflation_radius_m: 0.3
+      inscribed_radius_m: 1.0
+      cost_scaling_factor: 3.0
+      alpha_shape_alpha: 0.0
+      max_lane_cost: 100.0
+      max_lane_half_width_m: 5.0
     collision_checker:
       collision_mode: "strict"
+      lethal_threshold: 254.0
+      margin_m: 0.0
+    motion_primitives:
+      num_angle_bins: 72
+      min_turning_radius_m: 8.0
+      max_steer_angle_rad: 0.5
+    non_holonomic_heuristic:
+      lut_grid_size: 400
+      lut_cell_size_m: 0.1
+      hitch_angle_penalty_factor: 2.0
     active_layers:
       - static_obstacles
       - inflation
@@ -52,10 +70,28 @@ behaviors:
       weight_reverse: 1.0
       weight_steer: 0.5
       weight_steer_change: 1.5
+      analytic_expansion_max_length_m: 20.0
+      analytic_expansion_ratio: 0.35
     costmap:
+      resolution_m: 0.1
       inflation_radius_m: 0.0
+      inscribed_radius_m: 1.0
+      cost_scaling_factor: 3.0
+      alpha_shape_alpha: 0.0
+      max_lane_cost: 100.0
+      max_lane_half_width_m: 5.0
     collision_checker:
       collision_mode: "relaxed"
+      lethal_threshold: 254.0
+      margin_m: 0.0
+    motion_primitives:
+      num_angle_bins: 72
+      min_turning_radius_m: 8.0
+      max_steer_angle_rad: 0.5
+    non_holonomic_heuristic:
+      lut_grid_size: 400
+      lut_cell_size_m: 0.1
+      hitch_angle_penalty_factor: 2.0
     active_layers:
       - static_obstacles
       - zone_constraints
@@ -73,10 +109,28 @@ behaviors:
       weight_reverse: 2.0
       weight_steer: 0.1
       weight_steer_change: 0.5
+      analytic_expansion_max_length_m: 20.0
+      analytic_expansion_ratio: 0.35
     costmap:
+      resolution_m: 0.05
       inflation_radius_m: 0.3
+      inscribed_radius_m: 1.0
+      cost_scaling_factor: 3.0
+      alpha_shape_alpha: 0.0
+      max_lane_cost: 100.0
+      max_lane_half_width_m: 5.0
     collision_checker:
       collision_mode: "strict"
+      lethal_threshold: 254.0
+      margin_m: 0.0
+    motion_primitives:
+      num_angle_bins: 144
+      min_turning_radius_m: 8.0
+      max_steer_angle_rad: 0.5
+    non_holonomic_heuristic:
+      lut_grid_size: 400
+      lut_cell_size_m: 0.1
+      hitch_angle_penalty_factor: 2.0
     active_layers:
       - static_obstacles
       - inflation

@@ -34,10 +34,14 @@ protected:
             geometry::Point2d(15, 0)
         };
         auto track = std::make_shared<zones::TrackMainRoad>(poly_b, "zone_b");
-        std::vector<geometry::Point2d> waypoints = {
-            geometry::Point2d(20, 2.5), geometry::Point2d(40, 2.5)
+        std::vector<geometry::Point2d> lane_a = {
+            geometry::Point2d(20, 1.5), geometry::Point2d(40, 1.5)
         };
-        track->setLaneWaypointsFromPoints(waypoints);
+        std::vector<geometry::Point2d> lane_b = {
+            geometry::Point2d(20, 3.5), geometry::Point2d(40, 3.5)
+        };
+        track->addLaneFromPoints(lane_a);
+        track->addLaneFromPoints(lane_b);
         all_zones.push_back(track);
 
         car = std::make_unique<robot::Car>(2.0, 3.0, 0.5, 0.5);

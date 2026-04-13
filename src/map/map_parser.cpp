@@ -3,6 +3,7 @@
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace coastmotionplanning {
 namespace map {
@@ -24,13 +25,29 @@ std::vector<std::shared_ptr<zones::Zone>> MapParser::parse(const std::string& fi
     std::optional<double> model_metric;
 
     std::vector<std::shared_ptr<zones::Zone>> zones_list;
+    std::unordered_set<std::string> zone_names;
 
     if (config["zones"]) {
         for (const auto& zone_node : config["zones"]) {
+            if (!zone_node.IsMap()) {
+                throw std::runtime_error("Each zone entry must be a YAML map in: " + filepath);
+            }
+
+            const std::string name = zone_node["name"].as<std::string>("");
+            if (name.empty()) {
+                throw std::runtime_error("Zone entries must define a non-empty 'name' in: " + filepath);
+            }
+            if (zone_node["id"]) {
+                throw std::runtime_error(
+                    "Zone '" + name + "' uses deprecated 'id'. Use 'name' as the unique identifier.");
+            }
+            if (!zone_names.insert(name).second) {
+                throw std::runtime_error("Duplicate zone name '" + name + "' found in: " + filepath);
+            }
+
             std::string type = zone_node["type"].as<std::string>("");
-            std::string name = zone_node["name"].as<std::string>("");
             std::string planner_behavior_name = zone_node["planner_behavior"].as<std::string>("");
-            const std::string zone_label = name.empty() ? "<unnamed>" : name;
+            const std::string zone_label = name;
             const CoordinateType coordinate_type = parseCoordinateType(zone_node, zone_label);
             if (coordinate_type != CoordinateType::WORLD) {
                 if (!origin.has_value()) {
@@ -62,14 +79,16 @@ std::vector<std::shared_ptr<zones::Zone>> MapParser::parse(const std::string& fi
             } else if (type == "TrackMainRoad") {
                 auto track = std::make_shared<zones::TrackMainRoad>(polygon, name);
                 track->setPlannerBehavior(planner_behavior);
-                if (zone_node["lane_waypoints"]) {
-                    auto waypoints_points = parsePoints(
-                        zone_node["lane_waypoints"],
-                        coordinate_type,
-                        origin,
-                        model_metric.value_or(1.0),
-                        "lane_waypoints for zone '" + zone_label + "'");
-                    track->setLaneWaypointsFromPoints(waypoints_points);
+                if (zone_node["lanes"]) {
+                    for (const auto& lane_node : zone_node["lanes"]) {
+                        auto waypoints_points = parsePoints(
+                            lane_node["lane_waypoints"],
+                            coordinate_type,
+                            origin,
+                            model_metric.value_or(1.0),
+                            "lane_waypoints for zone '" + zone_label + "'");
+                        track->addLaneFromPoints(waypoints_points);
+                    }
                 }
                 zones_list.push_back(track);
             } else {

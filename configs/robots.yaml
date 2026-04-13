@@ -14,51 +14,47 @@ robots:
   # Car-type robots (single rigid body, Ackermann steering)
   # --------------------------------------------------------------------------
 
-  - id: "coast_buggy"
-    name: "Coast Buggy"
+  - name: "Pro_XD"
     type: "Car"
     geometry:
-      width_m: 1.2                   # overall body width
-      wheelbase_m: 1.8               # front axle to rear axle
-      front_overhang_m: 0.3          # front axle to front bumper
-      rear_overhang_m: 0.2           # rear axle to rear bumper
+      width_m: 1.62                   # overall body width
+      wheelbase_m: 2.972               # front axle to rear axle
+      front_overhang_m: 0.45          # front axle to front bumper
+      rear_overhang_m: 0.65           # rear axle to rear bumper
     kinematics:
-      max_steer_angle_deg: 30.0
-      max_speed_mps: 5.0
-      max_reverse_speed_mps: 2.0
+      max_steer_angle_deg: 34.0
+      max_speed_mps: 6.0
+      max_reverse_speed_mps: 1.0
 
-  - id: "utility_vehicle"
-    name: "Utility Vehicle"
+  - name: "E_Transit"
     type: "Car"
     geometry:
-      width_m: 1.8
-      wheelbase_m: 2.7
-      front_overhang_m: 0.8
-      rear_overhang_m: 0.6
+      width_m: 2.23
+      wheelbase_m: 3.76
+      front_overhang_m: 1.1
+      rear_overhang_m: 1.55
     kinematics:
-      max_steer_angle_deg: 29.0
-      max_speed_mps: 8.0
-      max_reverse_speed_mps: 3.0
+      max_steer_angle_deg: 28.0
+      max_speed_mps: 6.0
+      max_reverse_speed_mps: 1.0
 
-  - id: "compact_agv"
-    name: "Compact AGV"
+  - name: "Dolly"
     type: "Car"
     geometry:
-      width_m: 0.8
-      wheelbase_m: 1.0
-      front_overhang_m: 0.15
-      rear_overhang_m: 0.10
+      width_m: 3.022
+      wheelbase_m: 3.37
+      front_overhang_m: 0.55
+      rear_overhang_m: 1.012
     kinematics:
-      max_steer_angle_deg: 31.5
+      max_steer_angle_deg: 45.0
       max_speed_mps: 3.0
-      max_reverse_speed_mps: 1.5
+      max_reverse_speed_mps: 1.0
 
   # --------------------------------------------------------------------------
   # Truck-trailer robots (tractor + single articulated trailer)
   # --------------------------------------------------------------------------
 
-  - id: "yard_truck"
-    name: "Yard Truck with Flatbed"
+  - name: "Yard Truck with Flatbed"
     type: "TruckTrailer"
     tractor:
       width_m: 2.0
@@ -76,23 +72,3 @@ robots:
       max_hitch_angle_deg: 60.0      # max jackknife limit
       max_speed_mps: 5.0
       max_reverse_speed_mps: 2.0
-
-  - id: "port_hauler"
-    name: "Port Container Hauler"
-    type: "TruckTrailer"
-    tractor:
-      width_m: 2.5
-      wheelbase_m: 4.0
-      front_overhang_m: 1.2
-      rear_overhang_m: 0.6
-      hitch_offset_m: 1.0
-    trailer:
-      width_m: 2.5
-      wheelbase_m: 8.0
-      front_overhang_m: 0.5         # trailer extends 0.5m forward of hitch
-      rear_overhang_m: 1.5
-    kinematics:
-      max_steer_angle_deg: 23.0
-      max_hitch_angle_deg: 52.0      # max jackknife limit
-      max_speed_mps: 4.0
-      max_reverse_speed_mps: 1.5

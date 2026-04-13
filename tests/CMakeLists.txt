@@ -24,6 +24,23 @@ target_link_libraries(map_parser_test PRIVATE
 )
 gtest_discover_tests(map_parser_test)
 
+# Config parser tests
+add_executable(robots_parser_test config/RobotsParserTest.cpp)
+target_link_libraries(robots_parser_test PRIVATE
+    gtest_main
+    coast_motion_planning
+    yaml-cpp::yaml-cpp
+)
+gtest_discover_tests(robots_parser_test)
+
+add_executable(planner_behavior_parser_test config/PlannerBehaviorParserTest.cpp)
+target_link_libraries(planner_behavior_parser_test PRIVATE
+    gtest_main
+    coast_motion_planning
+    yaml-cpp::yaml-cpp
+)
+gtest_discover_tests(planner_behavior_parser_test)
+
 # Motion Primitives Tests
 add_executable(motion_primitives_test motion/MotionPrimitivesTest.cpp)
 target_link_libraries(motion_primitives_test PRIVATE

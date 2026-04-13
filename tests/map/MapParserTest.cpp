@@ -35,7 +35,23 @@ protected:
                   << "    coordinate_type: \"world\"\n"
                   << "    polygon:\n"
                   << "      - [1.0, 2.0]\n"
-                  << "      - [3.0, 4.0]\n";
+                  << "      - [3.0, 4.0]\n"
+                  << "  - name: \"multi_lane_zone\"\n"
+                  << "    type: \"TrackMainRoad\"\n"
+                  << "    planner_behavior: \"primary_profile\"\n"
+                  << "    coordinate_type: \"world\"\n"
+                  << "    polygon:\n"
+                  << "      - [0.0, 0.0]\n"
+                  << "      - [10.0, 0.0]\n"
+                  << "      - [10.0, 6.0]\n"
+                  << "      - [0.0, 6.0]\n"
+                  << "    lanes:\n"
+                  << "      - lane_waypoints:\n"
+                  << "          - [1.0, 2.0]\n"
+                  << "          - [9.0, 2.0]\n"
+                  << "      - lane_waypoints:\n"
+                  << "          - [1.0, 4.0]\n"
+                  << "          - [9.0, 4.0]\n";
         ofs_world.close();
 
         std::ofstream ofs_scaled("scaled_lat_lon_map.yaml");
@@ -89,6 +105,37 @@ protected:
                 << "    polygon:\n"
                 << "      - [49.3175, -122.3958]\n";
         ofs_inv.close();
+
+        std::ofstream ofs_dup("duplicate_zone_map.yaml");
+        ofs_dup << "maps:\n"
+                << "  name: \"Duplicate Zone Map\"\n"
+                << "zones:\n"
+                << "  - name: \"dup_zone\"\n"
+                << "    type: \"ManeuveringZone\"\n"
+                << "    coordinate_type: \"world\"\n"
+                << "    polygon:\n"
+                << "      - [0.0, 0.0]\n"
+                << "      - [1.0, 0.0]\n"
+                << "  - name: \"dup_zone\"\n"
+                << "    type: \"TrackMainRoad\"\n"
+                << "    coordinate_type: \"world\"\n"
+                << "    polygon:\n"
+                << "      - [2.0, 0.0]\n"
+                << "      - [3.0, 0.0]\n";
+        ofs_dup.close();
+
+        std::ofstream ofs_legacy("legacy_id_map.yaml");
+        ofs_legacy << "maps:\n"
+                   << "  name: \"Legacy ID Map\"\n"
+                   << "zones:\n"
+                   << "  - id: \"zone_a\"\n"
+                   << "    name: \"legacy_zone\"\n"
+                   << "    type: \"ManeuveringZone\"\n"
+                   << "    coordinate_type: \"world\"\n"
+                   << "    polygon:\n"
+                   << "      - [0.0, 0.0]\n"
+                   << "      - [1.0, 0.0]\n";
+        ofs_legacy.close();
     }
 
     void TearDown() override {
@@ -97,11 +144,21 @@ protected:
         std::remove("scaled_lat_lon_map.yaml");
         std::remove("valid_long_lat_map.yaml");
         std::remove("invalid_map.yaml");
+        std::remove("duplicate_zone_map.yaml");
+        std::remove("legacy_id_map.yaml");
     }
 };
 
 TEST_F(MapParserTest, ThrowsOnMissingModelMetric) {
     EXPECT_THROW(MapParser::parse("invalid_map.yaml"), std::runtime_error);
+}
+
+TEST_F(MapParserTest, ThrowsOnDuplicateZoneNames) {
+    EXPECT_THROW(MapParser::parse("duplicate_zone_map.yaml"), std::runtime_error);
+}
+
+TEST_F(MapParserTest, ThrowsOnDeprecatedZoneId) {
+    EXPECT_THROW(MapParser::parse("legacy_id_map.yaml"), std::runtime_error);
 }
 
 TEST_F(MapParserTest, ConvertsLatLonToWorld) {
@@ -123,7 +180,7 @@ TEST_F(MapParserTest, ConvertsLatLonToWorld) {
 
 TEST_F(MapParserTest, KeepsWorldCoordinatesWithoutGeographicOrigin) {
     auto zones = MapParser::parse("valid_world_map.yaml");
-    ASSERT_EQ(zones.size(), 1);
+    ASSERT_EQ(zones.size(), 2);
 
     auto polygon = zones[0]->getPolygon();
     ASSERT_EQ(polygon.outer().size(), 2);
@@ -132,6 +189,21 @@ TEST_F(MapParserTest, KeepsWorldCoordinatesWithoutGeographicOrigin) {
     EXPECT_DOUBLE_EQ(polygon.outer()[1].x(), 3.0);
     EXPECT_DOUBLE_EQ(polygon.outer()[1].y(), 4.0);
     EXPECT_EQ(zones[0]->getPlannerBehavior().value_or(""), "primary_profile");
+}
+
+TEST_F(MapParserTest, ParsesMultipleLanesForTrackRoadZone) {
+    auto zones = MapParser::parse("valid_world_map.yaml");
+    ASSERT_EQ(zones.size(), 2);
+
+    auto track = std::dynamic_pointer_cast<coastmotionplanning::zones::TrackMainRoad>(zones[1]);
+    ASSERT_NE(track, nullptr);
+    ASSERT_EQ(track->getLanes().size(), 2u);
+    ASSERT_EQ(track->getLanes()[0].size(), 2u);
+    ASSERT_EQ(track->getLanes()[1].size(), 2u);
+    EXPECT_DOUBLE_EQ(track->getLanes()[0][0].x, 1.0);
+    EXPECT_DOUBLE_EQ(track->getLanes()[0][0].y, 2.0);
+    EXPECT_DOUBLE_EQ(track->getLanes()[1][0].x, 1.0);
+    EXPECT_DOUBLE_EQ(track->getLanes()[1][0].y, 4.0);
 }
 
 TEST_F(MapParserTest, AppliesModelMetricToLatLonConversion) {

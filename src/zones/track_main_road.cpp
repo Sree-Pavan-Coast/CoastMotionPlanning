@@ -7,14 +7,15 @@ namespace zones {
 TrackMainRoad::TrackMainRoad(const geometry::Polygon2d& polygon, const std::optional<std::string>& name)
     : Zone(polygon, name) {}
 
-void TrackMainRoad::setLaneWaypointsFromPoints(const std::vector<geometry::Point2d>& points) {
-    lane_waypoints_.clear();
+void TrackMainRoad::addLaneFromPoints(const std::vector<geometry::Point2d>& points) {
     if (points.empty()) return;
 
-    lane_waypoints_.reserve(points.size());
+    std::vector<math::Pose2d> lane_waypoints;
+    lane_waypoints.reserve(points.size());
 
     if (points.size() == 1) {
-        lane_waypoints_.emplace_back(points[0].x(), points[0].y(), math::Angle::from_radians(0.0));
+        lane_waypoints.emplace_back(points[0].x(), points[0].y(), math::Angle::from_radians(0.0));
+        lanes_.push_back(std::move(lane_waypoints));
         return;
     }
 
@@ -26,8 +27,10 @@ void TrackMainRoad::setLaneWaypointsFromPoints(const std::vector<geometry::Point
             // For the terminal point, use the orientation of the final segment
             yaw = std::atan2(points[i].y() - points[i-1].y(), points[i].x() - points[i-1].x());
         }
-        lane_waypoints_.emplace_back(points[i].x(), points[i].y(), math::Angle::from_radians(yaw));
+        lane_waypoints.emplace_back(points[i].x(), points[i].y(), math::Angle::from_radians(yaw));
     }
+
+    lanes_.push_back(std::move(lane_waypoints));
 }
 
 } // namespace zones

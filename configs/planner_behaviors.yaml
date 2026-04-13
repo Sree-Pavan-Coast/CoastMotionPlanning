@@ -1,0 +1,85 @@
+# ==============================================================================
+# Planner Behaviors
+# Each behavior is a profile/variant of the master_params.yaml settings.
+# Only override parameters that differ from the master reference.
+# ==============================================================================
+#
+# Available Costmap Layers (for active_layers list):
+# ──────────────────────────────────────────────────
+#   static_obstacles         — Binary free/lethal from search boundary
+#   inflation                — BFS wavefront gradient from lethal cells
+#   zone_constraints         — Zone index per cell (planner queries zone for behavior)
+#   lane_centerline_cost     — Distance-to-centerline cost in track road zones
+#   holonomic_with_obstacles — 2D Dijkstra from goal (admissible heuristic)
+#   combined_cost            — Merged layer: max(static, zone_lethal) + inflation + lane
+#
+# Note: Each zone type also defines which layers it activates via getActiveLayers().
+#       The behavior's active_layers list acts as a global filter — only layers that
+#       appear in BOTH the behavior profile AND the zone's getActiveLayers() are built.
+
+behaviors:
+  # The strict, optimal primary planner profile
+  primary_profile:
+    planner:
+      max_planning_time_ms: 200
+      xy_grid_resolution_m: 0.1
+      yaw_grid_resolution_deg: 5.0
+      step_size_m: 0.5
+      weight_forward: 1.0
+      weight_reverse: 2.5
+      weight_steer: 0.5
+      weight_steer_change: 1.5
+    costmap:
+      inflation_radius_m: 0.3
+    collision_checker:
+      collision_mode: "strict"
+    active_layers:
+      - static_obstacles
+      - inflation
+      - zone_constraints
+      - lane_centerline_cost
+      - holonomic_with_obstacles
+      - combined_cost
+
+  # The relaxed fallback profile — less strict boundaries, faster planning
+  relaxed_profile:
+    planner:
+      max_planning_time_ms: 50
+      xy_grid_resolution_m: 0.1
+      yaw_grid_resolution_deg: 5.0
+      step_size_m: 1.0
+      weight_forward: 1.0
+      weight_reverse: 1.0
+      weight_steer: 0.5
+      weight_steer_change: 1.5
+    costmap:
+      inflation_radius_m: 0.0
+    collision_checker:
+      collision_mode: "relaxed"
+    active_layers:
+      - static_obstacles
+      - zone_constraints
+      - holonomic_with_obstacles
+      - combined_cost
+
+  # High-precision profile for parking or tight maneuvers
+  parking_profile:
+    planner:
+      max_planning_time_ms: 100
+      xy_grid_resolution_m: 0.05
+      yaw_grid_resolution_deg: 2.5
+      step_size_m: 0.1
+      weight_forward: 1.0
+      weight_reverse: 2.0
+      weight_steer: 0.1
+      weight_steer_change: 0.5
+    costmap:
+      inflation_radius_m: 0.3
+    collision_checker:
+      collision_mode: "strict"
+    active_layers:
+      - static_obstacles
+      - inflation
+      - zone_constraints
+      - holonomic_with_obstacles
+      - combined_cost

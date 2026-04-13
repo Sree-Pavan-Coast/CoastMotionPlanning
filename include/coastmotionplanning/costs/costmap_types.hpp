@@ -1,0 +1,70 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+
+namespace coastmotionplanning {
+namespace costs {
+
+// =============================================================================
+// Cost value constants (matching ROS nav2_costmap_2d conventions)
+// =============================================================================
+
+struct CostValues {
+    static constexpr float FREE_SPACE      = 0.0f;
+    static constexpr float INSCRIBED        = 128.0f;
+    static constexpr float LETHAL           = 254.0f;
+    static constexpr float NO_INFORMATION   = 255.0f;
+};
+
+// =============================================================================
+// Layer name constants
+// =============================================================================
+
+namespace CostmapLayerNames {
+    constexpr const char* STATIC_OBSTACLES           = "static_obstacles";
+    constexpr const char* INFLATION                  = "inflation";
+    constexpr const char* ZONE_CONSTRAINTS           = "zone_constraints";
+    constexpr const char* LANE_CENTERLINE_COST       = "lane_centerline_cost";
+    constexpr const char* HOLONOMIC_WITH_OBSTACLES   = "holonomic_with_obstacles";
+    constexpr const char* COMBINED_COST              = "combined_cost";
+} // namespace CostmapLayerNames
+
+// =============================================================================
+// Zone constraint constants (written to the zone_constraints layer)
+// The zone_constraints layer stores zone indices (0-based) for cells inside
+// selected zones. Cells outside all zones use ZONE_NONE.
+// The planner looks up the zone object by index to query zone-specific
+// behavior (reverse allowed, active layers, etc.) via polymorphism.
+// =============================================================================
+
+struct ZoneConstraintValues {
+    static constexpr float ZONE_NONE = 255.0f;  // Cell outside all operational zones (lethal)
+};
+
+// =============================================================================
+// Configuration for the costmap builder
+// =============================================================================
+
+struct CostmapConfig {
+    // Grid
+    double resolution{0.1};                     // meters per cell
+
+    // Inflation
+    double inflation_radius_m{0.3};             // outer inflation radius
+    double inscribed_radius_m{1.0};             // robot inscribed radius (half-width)
+    double cost_scaling_factor{3.0};            // exponential decay factor
+
+    // Zone preprocessing
+    double alpha_shape_alpha{0.0};              // 0 = auto (derived from resolution)
+
+    // Lane centerline
+    double max_lane_cost{100.0};                // maximum cost at lane boundary
+    double max_lane_half_width{5.0};            // distance at which cost saturates
+
+    // Non-holonomic heuristic
+    double hitch_angle_penalty_factor{2.0};     // weight for truck-trailer hitch angle penalty
+};
+
+} // namespace costs
+} // namespace coastmotionplanning

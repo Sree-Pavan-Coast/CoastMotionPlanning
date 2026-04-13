@@ -1,0 +1,46 @@
+# ==============================================================================
+# Master Parameters (Reference)
+# This file serves as the baseline parameter definitions for all subsystems.
+# Per-behavior overrides go in planner_behaviors.yaml.
+# ==============================================================================
+
+# ---- Planner (Hybrid A*) ----
+planner:
+  max_planning_time_ms: 100
+  xy_grid_resolution_m: 0.1
+  yaw_grid_resolution_deg: 5.0
+  step_size_m: 0.5
+  weight_forward: 1.0
+  weight_reverse: 2.0
+  weight_steer: 0.5
+  weight_steer_change: 1.5
+  analytic_expansion_max_length_m: 20.0
+  analytic_expansion_ratio: 0.35     # try analytic expansion every N nodes
+
+# ---- Costmap ----
+costmap:
+  resolution_m: 0.1
+  inflation_radius_m: 0.3
+  inscribed_radius_m: 1.0            # robot half-width (auto-derived if 0)
+  cost_scaling_factor: 3.0
+  alpha_shape_alpha: 0.0             # 0 = auto (concave hull parameter)
+  max_lane_cost: 100.0               # max cost at lane boundary
+  max_lane_half_width_m: 5.0         # distance at which lane cost saturates
+
+# ---- Collision Checker ----
+collision_checker:
+  collision_mode: "strict"           # "strict" | "relaxed"
+  lethal_threshold: 254.0            # cost at or above this = collision
+  margin_m: 0.0                      # extra safety margin around footprint
+
+# ---- Motion Primitives ----
+motion_primitives:
+  num_angle_bins: 72                 # heading discretization (360/5 = 72)
+  min_turning_radius_m: 8.0          # from robot kinematic model
+  max_steer_angle_rad: 0.5           # max steering angle
+
+# ---- Non-Holonomic Heuristic ----
+non_holonomic_heuristic:
+  lut_grid_size: 400
+  lut_cell_size_m: 0.1
+  hitch_angle_penalty_factor: 2.0    # truck-trailer hitch penalty weight

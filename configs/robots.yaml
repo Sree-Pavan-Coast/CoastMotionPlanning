@@ -1,0 +1,98 @@
+# ==============================================================================
+# Robot Definitions
+# Each robot entry defines the physical geometry and kinematic parameters
+# used by the planner, collision checker, and motion primitive generator.
+#
+# Supported types:
+#   - "Car"          → Ackermann-steered single-body vehicle
+#   - "TruckTrailer" → Articulated tractor + single trailer with hitch joint
+# ==============================================================================
+
+robots:
+
+  # --------------------------------------------------------------------------
+  # Car-type robots (single rigid body, Ackermann steering)
+  # --------------------------------------------------------------------------
+
+  - id: "coast_buggy"
+    name: "Coast Buggy"
+    type: "Car"
+    geometry:
+      width_m: 1.2                   # overall body width
+      wheelbase_m: 1.8               # front axle to rear axle
+      front_overhang_m: 0.3          # front axle to front bumper
+      rear_overhang_m: 0.2           # rear axle to rear bumper
+    kinematics:
+      max_steer_angle_deg: 30.0
+      max_speed_mps: 5.0
+      max_reverse_speed_mps: 2.0
+
+  - id: "utility_vehicle"
+    name: "Utility Vehicle"
+    type: "Car"
+    geometry:
+      width_m: 1.8
+      wheelbase_m: 2.7
+      front_overhang_m: 0.8
+      rear_overhang_m: 0.6
+    kinematics:
+      max_steer_angle_deg: 29.0
+      max_speed_mps: 8.0
+      max_reverse_speed_mps: 3.0
+
+  - id: "compact_agv"
+    name: "Compact AGV"
+    type: "Car"
+    geometry:
+      width_m: 0.8
+      wheelbase_m: 1.0
+      front_overhang_m: 0.15
+      rear_overhang_m: 0.10
+    kinematics:
+      max_steer_angle_deg: 31.5
+      max_speed_mps: 3.0
+      max_reverse_speed_mps: 1.5
+
+  # --------------------------------------------------------------------------
+  # Truck-trailer robots (tractor + single articulated trailer)
+  # --------------------------------------------------------------------------
+
+  - id: "yard_truck"
+    name: "Yard Truck with Flatbed"
+    type: "TruckTrailer"
+    tractor:
+      width_m: 2.0
+      wheelbase_m: 3.5              # front axle to rear axle
+      front_overhang_m: 1.0
+      rear_overhang_m: 0.5
+      hitch_offset_m: 0.8           # rear axle backward to hitch pin
+    trailer:
+      width_m: 2.4
+      wheelbase_m: 5.0              # hitch pin to trailer axle
+      front_overhang_m: 0.0         # trailer front face at hitch
+      rear_overhang_m: 1.2          # trailer axle to rear bumper
+    kinematics:
+      max_steer_angle_deg: 26.0
+      max_hitch_angle_deg: 60.0      # max jackknife limit
+      max_speed_mps: 5.0
+      max_reverse_speed_mps: 2.0
+
+  - id: "port_hauler"
+    name: "Port Container Hauler"
+    type: "TruckTrailer"
+    tractor:
+      width_m: 2.5
+      wheelbase_m: 4.0
+      front_overhang_m: 1.2
+      rear_overhang_m: 0.6
+      hitch_offset_m: 1.0
+    trailer:
+      width_m: 2.5
+      wheelbase_m: 8.0
+      front_overhang_m: 0.5         # trailer extends 0.5m forward of hitch
+      rear_overhang_m: 1.5
+    kinematics:
+      max_steer_angle_deg: 23.0
+      max_hitch_angle_deg: 52.0      # max jackknife limit
+      max_speed_mps: 4.0
+      max_reverse_speed_mps: 1.5

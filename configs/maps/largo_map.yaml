@@ -1,0 +1,33 @@
+# coordinate_type options:
+# - "world": points are [x, y]
+# - "lat_long": points are [latitude, longitude]
+# - "long_lat": points are [longitude, latitude]
+# planner_behavior should reference a behavior name from configs/planner_behaviors.yaml
+maps:
+  name: "Largo Map"
+  
+zones:
+  - id: "zone_a"
+    name: "largo_maneuvering_dock"
+    type: "ManeuveringZone"
+    planner_behavior: "parking_profile"
+    coordinate_type: "world"
+    polygon:
+      - [-5.0, -5.0]
+      - [15.0, -5.0]
+      - [15.0, 20.0]
+      - [-5.0, 20.0]
+
+  - id: "zone_b"
+    name: "largo_main_road_entry"
+    type: "TrackMainRoad"
+    planner_behavior: "primary_profile"
+    coordinate_type: "world"
+    polygon:
+      - [15.0, 0.0]
+      - [100.0, 0.0]
+      - [100.0, 5.0]
+      - [15.0, 5.0]
+    lane_waypoints:
+      - [20.0, 2.5]
+      - [40.0, 2.5]

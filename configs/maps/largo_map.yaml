@@ -10,7 +10,7 @@ maps:
 zones:
   - name: "largo_maneuvering_dock"
     type: "ManeuveringZone"
-    planner_behavior: "parking_profile"
+    planner_behavior: "primary_profile"
     coordinate_type: "world"
     polygon:
       - [-5.0, -5.0]

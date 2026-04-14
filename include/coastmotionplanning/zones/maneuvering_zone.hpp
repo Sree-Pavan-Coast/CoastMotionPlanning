@@ -15,7 +15,7 @@ public:
 
     ManeuveringZone(const geometry::Polygon2d& polygon, const std::optional<std::string>& name = std::nullopt);
 
-    std::string getDefaultPlannerBehavior() const override { return "parking_profile"; }
+    std::string getDefaultPlannerBehavior() const override { return ""; }
 
     /// Maneuvering zones activate: static_obstacles, inflation, holonomic heuristic.
     /// No lane centerline cost (free maneuvering in any direction).
@@ -27,7 +27,8 @@ public:
         };
     }
 
-    /// Forward and reverse motion are both allowed in a maneuvering zone.
+    /// No inherent motion-direction restriction. The selected planner profile
+    /// decides whether reverse is allowed for this zone type.
     bool isReverseAllowed() const override { return true; }
 };
 

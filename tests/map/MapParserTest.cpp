@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "coastmotionplanning/map/map_parser.hpp"
+#include "coastmotionplanning/zones/track_main_road.hpp"
 
 using namespace coastmotionplanning::map;
 
@@ -263,15 +264,46 @@ TEST_F(MapParserTest, ThrowsOnFileMissing) {
     EXPECT_THROW(MapParser::parse("non_existent.yaml"), std::runtime_error);
 }
 
-TEST_F(MapParserTest, UsesZoneTypeDefaultWhenBehaviorIsDefaultOrMissing) {
+TEST_F(MapParserTest, LeavesBehaviorUnsetWhenBehaviorIsDefaultOrMissing) {
     auto zones = MapParser::parse("default_behavior_map.yaml");
     ASSERT_EQ(zones.size(), 2);
 
     EXPECT_FALSE(zones[0]->hasExplicitPlannerBehavior());
     EXPECT_EQ(zones[0]->getPlannerBehavior(), std::nullopt);
-    EXPECT_EQ(zones[0]->getResolvedPlannerBehavior(), "primary_profile");
+    EXPECT_TRUE(zones[0]->getResolvedPlannerBehavior().empty());
 
     EXPECT_FALSE(zones[1]->hasExplicitPlannerBehavior());
     EXPECT_EQ(zones[1]->getPlannerBehavior(), std::nullopt);
-    EXPECT_EQ(zones[1]->getResolvedPlannerBehavior(), "parking_profile");
+    EXPECT_TRUE(zones[1]->getResolvedPlannerBehavior().empty());
+}
+
+TEST_F(MapParserTest, ParsesMapYamlFromMemory) {
+    const std::string yaml = R"(
+maps:
+  name: "Inline Map"
+zones:
+  - name: "inline_zone"
+    type: "TrackMainRoad"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, -2.0]
+      - [8.0, -2.0]
+      - [8.0, 2.0]
+      - [0.0, 2.0]
+    lanes:
+      - lane_waypoints:
+          - [1.0, 0.0]
+          - [7.0, 0.0]
+)";
+
+    const auto zones = MapParser::parseFromString(yaml, "inline-map");
+    ASSERT_EQ(zones.size(), 1u);
+
+    const auto track = std::dynamic_pointer_cast<coastmotionplanning::zones::TrackMainRoad>(zones[0]);
+    ASSERT_NE(track, nullptr);
+    EXPECT_TRUE(track->getResolvedPlannerBehavior().empty());
+    ASSERT_EQ(track->getLanes().size(), 1u);
+    ASSERT_EQ(track->getLanes()[0].size(), 2u);
+    EXPECT_DOUBLE_EQ(track->getLanes()[0][0].x, 1.0);
+    EXPECT_DOUBLE_EQ(track->getLanes()[0][0].y, 0.0);
 }

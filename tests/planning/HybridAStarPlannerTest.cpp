@@ -1,13 +1,20 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "coastmotionplanning/math/angle.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
+#include "coastmotionplanning/motion_primitives/car_motion_table.hpp"
 #include "coastmotionplanning/motion_primitives/motion_primitive_types.hpp"
+#include "coastmotionplanning/config/robots_parser.hpp"
 #include "coastmotionplanning/planning/hybrid_a_star_planner.hpp"
 #include "coastmotionplanning/planning/planner_behavior_set.hpp"
 #include "coastmotionplanning/zones/maneuvering_zone.hpp"
@@ -20,6 +27,8 @@ using coastmotionplanning::math::Angle;
 using coastmotionplanning::math::Pose2d;
 using coastmotionplanning::planning::HybridAStarPlanner;
 using coastmotionplanning::planning::HybridAStarPlannerRequest;
+using coastmotionplanning::planning::HybridAStarPlannerResult;
+using coastmotionplanning::planning::PlannerBehaviorProfile;
 using coastmotionplanning::planning::PlannerBehaviorSet;
 using coastmotionplanning::planning::ResolvedPlannerBehavior;
 using coastmotionplanning::robot::Car;
@@ -38,8 +47,82 @@ std::string repoPath(const std::string& relative_path) {
     return std::string(COAST_REPO_ROOT) + "/" + relative_path;
 }
 
+PlannerBehaviorSet applyRobotConstraints(PlannerBehaviorSet behavior_set,
+                                         const std::string& robot_name = "Pro_XD") {
+    const auto car_definition = coastmotionplanning::config::RobotsParser::loadCarDefinition(
+        repoPath("configs/robots.yaml"),
+        robot_name);
+    behavior_set.overrideMotionPrimitiveConstraints(
+        car_definition.minTurningRadiusMeters(),
+        car_definition.maxSteerAngleRadians());
+    return behavior_set;
+}
+
 PlannerBehaviorSet loadBehaviorSet() {
-    return PlannerBehaviorSet::loadFromFile(repoPath("configs/planner_behaviors.yaml"));
+    return applyRobotConstraints(
+        PlannerBehaviorSet::loadFromFile(repoPath("configs/planner_behaviors.yaml")));
+}
+
+std::string readFile(const std::string& path) {
+    std::ifstream stream(path);
+    std::ostringstream buffer;
+    buffer << stream.rdbuf();
+    return buffer.str();
+}
+
+PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
+                                                       double min_same_motion_length_m) {
+    const std::filesystem::path temp_dir =
+        std::filesystem::temp_directory_path() / "coastmotionplanning_hybrid_astar_test";
+    std::filesystem::create_directories(temp_dir);
+
+    std::ofstream master_file(temp_dir / "master_params.yaml");
+    master_file << readFile(repoPath("configs/master_params.yaml"));
+    master_file.close();
+
+    std::string behaviors = readFile(repoPath("configs/planner_behaviors.yaml"));
+    const std::string only_forward_false = "      only_forward_path: false";
+    const size_t only_forward_pos = behaviors.find(only_forward_false);
+    if (only_forward_pos == std::string::npos) {
+        throw std::runtime_error("Failed to locate only_forward_path in planner_behaviors.yaml");
+    }
+    behaviors.replace(
+        only_forward_pos,
+        only_forward_false.size(),
+        std::string("      only_forward_path: ") + (only_forward_path ? "true" : "false"));
+
+    const std::string current_min_same_motion = "      min_path_len_in_same_motion: 1.0";
+    const size_t min_same_motion_pos = behaviors.find(current_min_same_motion);
+    if (min_same_motion_pos == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate min_path_len_in_same_motion in planner_behaviors.yaml");
+    }
+    behaviors.replace(
+        min_same_motion_pos,
+        current_min_same_motion.size(),
+        "      min_path_len_in_same_motion: " + std::to_string(min_same_motion_length_m));
+
+    std::ofstream behavior_file(temp_dir / "planner_behaviors.yaml");
+    behavior_file << behaviors;
+    behavior_file.close();
+
+    return applyRobotConstraints(
+        PlannerBehaviorSet::loadFromFile((temp_dir / "planner_behaviors.yaml").string()),
+        "E_Transit");
+}
+
+double straightPrimitiveLengthM(const PlannerBehaviorProfile& profile) {
+    coastmotionplanning::motion_primitives::MotionTableConfig motion_config;
+    motion_config.minimum_turning_radius = static_cast<float>(
+        profile.motion_primitives.min_turning_radius_m /
+        profile.planner.xy_grid_resolution_m);
+    motion_config.num_angle_quantization = static_cast<unsigned int>(
+        profile.motion_primitives.num_angle_bins);
+
+    coastmotionplanning::motion_primitives::CarMotionTable motion_table;
+    motion_table.initReedsShepp(motion_config);
+    return static_cast<double>(motion_table.getTravelCost(0)) *
+           profile.planner.xy_grid_resolution_m;
 }
 
 std::shared_ptr<coastmotionplanning::zones::ManeuveringZone> makeManeuveringZone(
@@ -78,7 +161,7 @@ Car makeCar() {
     return Car(2.0, 3.0, 0.5, 0.5);
 }
 
-TEST(HybridAStarPlannerPolicyTest, ForwardOnlyZonesUseDubinsAndPruneReverse) {
+TEST(HybridAStarPlannerPolicyTest, TrackRoadWithoutForwardOnlyProfileAllowsReverse) {
     const PlannerBehaviorSet behavior_set = loadBehaviorSet();
     const auto track_zone = makeTrackZone(0.0, -4.0, 10.0, 4.0);
     const ResolvedPlannerBehavior resolved{
@@ -90,12 +173,12 @@ TEST(HybridAStarPlannerPolicyTest, ForwardOnlyZonesUseDubinsAndPruneReverse) {
 
     EXPECT_EQ(
         HybridAStarPlanner::selectHeuristicModel(resolved),
-        coastmotionplanning::costs::HeuristicModel::DUBINS);
+        coastmotionplanning::costs::HeuristicModel::REEDS_SHEPP);
     EXPECT_TRUE(HybridAStarPlanner::isPrimitiveAllowed(
         coastmotionplanning::motion_primitives::TurnDirection::FORWARD, resolved));
-    EXPECT_FALSE(HybridAStarPlanner::isPrimitiveAllowed(
+    EXPECT_TRUE(HybridAStarPlanner::isPrimitiveAllowed(
         coastmotionplanning::motion_primitives::TurnDirection::REVERSE, resolved));
-    EXPECT_FALSE(HybridAStarPlanner::isPrimitiveAllowed(
+    EXPECT_TRUE(HybridAStarPlanner::isPrimitiveAllowed(
         coastmotionplanning::motion_primitives::TurnDirection::REV_LEFT, resolved));
 }
 
@@ -116,6 +199,29 @@ TEST(HybridAStarPlannerPolicyTest, ReverseAllowedZonesUseReedsSheppAndAllowRever
         coastmotionplanning::motion_primitives::TurnDirection::REVERSE, resolved));
     EXPECT_TRUE(HybridAStarPlanner::isPrimitiveAllowed(
         coastmotionplanning::motion_primitives::TurnDirection::REV_RIGHT, resolved));
+}
+
+TEST(HybridAStarPlannerPolicyTest, OnlyForwardProfilePrunesReverseEvenInManeuveringZone) {
+    const auto maneuvering_zone = makeManeuveringZone(0.0, -4.0, 10.0, 4.0);
+    PlannerBehaviorProfile forward_only_profile;
+    forward_only_profile.planner.only_forward_path = true;
+
+    const ResolvedPlannerBehavior resolved{
+        maneuvering_zone,
+        "custom_forward_only",
+        &forward_only_profile,
+        false
+    };
+
+    EXPECT_EQ(
+        HybridAStarPlanner::selectHeuristicModel(resolved),
+        coastmotionplanning::costs::HeuristicModel::DUBINS);
+    EXPECT_TRUE(HybridAStarPlanner::isPrimitiveAllowed(
+        coastmotionplanning::motion_primitives::TurnDirection::FORWARD, resolved));
+    EXPECT_FALSE(HybridAStarPlanner::isPrimitiveAllowed(
+        coastmotionplanning::motion_primitives::TurnDirection::REVERSE, resolved));
+    EXPECT_FALSE(HybridAStarPlanner::isPrimitiveAllowed(
+        coastmotionplanning::motion_primitives::TurnDirection::REV_LEFT, resolved));
 }
 
 TEST(HybridAStarPlannerTest, SameZoneCarPlanningSucceeds) {
@@ -145,7 +251,7 @@ TEST(HybridAStarPlannerTest, CrossZonePlanningShowsBehaviorSwitch) {
     const Car car = makeCar();
     std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         makeTrackZone(0.0, -4.0, 10.0, 4.0),
-        makeManeuveringZone(10.0, -4.0, 20.0, 4.0)
+        makeManeuveringZone(10.0, -4.0, 20.0, 4.0, "parking_profile")
     };
 
     HybridAStarPlanner planner(car, zones, behavior_set);
@@ -221,6 +327,57 @@ TEST(HybridAStarPlannerTest, StartCollisionFailsOnSelectedZoneCostmap) {
 
     EXPECT_FALSE(result.success);
     EXPECT_NE(result.detail.find("Start pose is in collision"), std::string::npos);
+}
+
+TEST(HybridAStarPlannerTest, GoalMustAllowMinimumSameMotionLengthBeforeStopping) {
+    const PlannerBehaviorSet behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(true, 5.0);
+    const auto& primary_profile = behavior_set.get("primary_profile");
+    const double straight_step_m = straightPrimitiveLengthM(primary_profile);
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -4.0, 12.0, 4.0)
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(2.0, 0.0, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    int first_success_steps = -1;
+    HybridAStarPlannerResult long_enough_result;
+    for (int steps = 1; steps <= 20; ++steps) {
+        request.goal = makePose(2.0 + (steps * straight_step_m), 0.0, 0.0);
+        const auto candidate_result = planner.plan(request);
+        if (candidate_result.success) {
+            first_success_steps = steps;
+            long_enough_result = candidate_result;
+            break;
+        }
+    }
+
+    ASSERT_NE(first_success_steps, -1);
+    EXPECT_GE(
+        (first_success_steps * straight_step_m) + 1e-6,
+        primary_profile.planner.min_path_len_in_same_motion);
+
+    request.goal = makePose(2.0 + ((first_success_steps - 1) * straight_step_m), 0.0, 0.0);
+    const auto too_short_result = planner.plan(request);
+    EXPECT_FALSE(too_short_result.success);
+    EXPECT_NE(
+        too_short_result.detail.find("timed out") == std::string::npos
+            ? too_short_result.detail.find("exhausted")
+            : too_short_result.detail.find("timed out"),
+        std::string::npos);
+
+    ASSERT_TRUE(long_enough_result.success) << long_enough_result.detail;
+    ASSERT_FALSE(long_enough_result.segment_directions.empty());
+    EXPECT_TRUE(std::all_of(
+        long_enough_result.segment_directions.begin(),
+        long_enough_result.segment_directions.end(),
+        [](coastmotionplanning::common::MotionDirection direction) {
+            return direction == coastmotionplanning::common::MotionDirection::Forward;
+        }));
 }
 
 } // namespace

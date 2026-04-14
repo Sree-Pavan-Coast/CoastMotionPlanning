@@ -34,12 +34,13 @@ namespace CostmapLayerNames {
 // Zone constraint constants (written to the zone_constraints layer)
 // The zone_constraints layer stores zone indices (0-based) for cells inside
 // selected zones. Cells outside all zones use ZONE_NONE.
-// The planner looks up the zone object by index to query zone-specific
-// behavior (reverse allowed, active layers, etc.) via polymorphism.
+// The planner reads this layer at runtime to map a node to its zone/profile
+// context without repeated polygon-within checks.
 // =============================================================================
 
 struct ZoneConstraintValues {
-    static constexpr float ZONE_NONE = 255.0f;  // Cell outside all operational zones (lethal)
+    static constexpr float ZONE_NONE = 255.0f;       // Cell outside all operational zones (lethal)
+    static constexpr float ZONE_TRANSITION = 253.0f;  // Cell in search boundary gap between zones (passable)
 };
 
 // =============================================================================

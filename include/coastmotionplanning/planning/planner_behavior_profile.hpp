@@ -13,12 +13,15 @@ struct PlannerBehaviorPlannerConfig {
     double xy_grid_resolution_m{0.0};
     double yaw_grid_resolution_deg{0.0};
     double step_size_m{0.0};
+    bool only_forward_path{false};
     double weight_forward{0.0};
     double weight_reverse{0.0};
     double weight_steer{0.0};
     double weight_steer_change{0.0};
+    double weight_gear_change{0.0};
     double analytic_expansion_max_length_m{0.0};
     double analytic_expansion_ratio{0.0};
+    double min_path_len_in_same_motion{0.0};
 };
 
 struct PlannerBehaviorCostmapConfig {

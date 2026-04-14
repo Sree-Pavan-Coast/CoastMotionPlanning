@@ -107,6 +107,8 @@ TEST_F(ZoneSelectorTest, GappedZones_ConcaveHullBridgesGap) {
         geometry::Point2d(0.0, 0.0), result.search_boundary));
     EXPECT_TRUE(costs::ZoneSelector::isInsidePolygon(
         geometry::Point2d(130.0, 5.0), result.search_boundary));
+    EXPECT_TRUE(costs::ZoneSelector::isInsidePolygon(
+        geometry::Point2d(70.0, 5.0), result.search_boundary));
 }
 
 TEST_F(ZoneSelectorTest, FindContainingZone_ReturnsCorrectZone) {

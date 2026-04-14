@@ -28,8 +28,29 @@ std::vector<std::shared_ptr<zones::Zone>> MapParser::parse(const std::string& fi
         throw std::runtime_error("Failed to load YAML file: " + filepath + ". Error: " + e.what());
     }
 
+    return parseDocument(config, filepath);
+}
+
+std::vector<std::shared_ptr<zones::Zone>> MapParser::parseFromString(
+    const std::string& yaml_content,
+    const std::string& source_label) {
+    YAML::Node config;
+    try {
+        config = YAML::Load(yaml_content);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(
+            "Failed to load YAML content: " + source_label + ". Error: " + e.what());
+    }
+
+    return parseDocument(config, source_label);
+}
+
+std::vector<std::shared_ptr<zones::Zone>> MapParser::parseDocument(
+    const YAML::Node& config,
+    const std::string& source_label) {
+
     if (!config["maps"]) {
-        throw std::runtime_error("Map file missing 'maps' section: " + filepath);
+        throw std::runtime_error("Map file missing 'maps' section: " + source_label);
     }
 
     const auto& maps_node = config["maps"];
@@ -42,19 +63,21 @@ std::vector<std::shared_ptr<zones::Zone>> MapParser::parse(const std::string& fi
     if (config["zones"]) {
         for (const auto& zone_node : config["zones"]) {
             if (!zone_node.IsMap()) {
-                throw std::runtime_error("Each zone entry must be a YAML map in: " + filepath);
+                throw std::runtime_error("Each zone entry must be a YAML map in: " + source_label);
             }
 
             const std::string name = zone_node["name"].as<std::string>("");
             if (name.empty()) {
-                throw std::runtime_error("Zone entries must define a non-empty 'name' in: " + filepath);
+                throw std::runtime_error(
+                    "Zone entries must define a non-empty 'name' in: " + source_label);
             }
             if (zone_node["id"]) {
                 throw std::runtime_error(
                     "Zone '" + name + "' uses deprecated 'id'. Use 'name' as the unique identifier.");
             }
             if (!zone_names.insert(name).second) {
-                throw std::runtime_error("Duplicate zone name '" + name + "' found in: " + filepath);
+                throw std::runtime_error(
+                    "Duplicate zone name '" + name + "' found in: " + source_label);
             }
 
             std::string type = zone_node["type"].as<std::string>("");

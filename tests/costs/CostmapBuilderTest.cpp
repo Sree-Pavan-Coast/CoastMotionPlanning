@@ -130,6 +130,35 @@ TEST_F(CostmapBuilderTest, ZoneConstraintsCorrect) {
     EXPECT_FLOAT_EQ(zc, 1.0f);  // zone_b is the second selected zone
 }
 
+TEST_F(CostmapBuilderTest, GapBetweenZonesBecomesDrivableTransitionSpace) {
+    geometry::Polygon2d poly_c;
+    poly_c.outer() = {
+        geometry::Point2d(120, 0), geometry::Point2d(140, 0),
+        geometry::Point2d(140, 10), geometry::Point2d(120, 10),
+        geometry::Point2d(120, 0)
+    };
+    all_zones.push_back(std::make_shared<zones::ManeuveringZone>(poly_c, "zone_c"));
+
+    costs::CostmapBuilder builder(config, all_zones, *car);
+
+    math::Pose2d start(0.0, 0.0, math::Angle::from_radians(0.0));
+    math::Pose2d goal(130.0, 5.0, math::Angle::from_radians(0.0));
+
+    auto costmap = builder.build(start, goal);
+
+    const grid_map::Position gap_pos(70.0, 5.0);
+    const float zone_value =
+        costmap.atPosition(costs::CostmapLayerNames::ZONE_CONSTRAINTS, gap_pos);
+    const float combined_cost =
+        costmap.atPosition(costs::CostmapLayerNames::COMBINED_COST, gap_pos);
+    const float static_cost =
+        costmap.atPosition(costs::CostmapLayerNames::STATIC_OBSTACLES, gap_pos);
+
+    EXPECT_FLOAT_EQ(zone_value, costs::ZoneConstraintValues::ZONE_TRANSITION);
+    EXPECT_FLOAT_EQ(static_cost, costs::CostValues::FREE_SPACE);
+    EXPECT_LT(combined_cost, costs::CostValues::LETHAL);
+}
+
 TEST_F(CostmapBuilderTest, PerformanceBudget) {
     costs::CostmapBuilder builder(config, all_zones, *car);
 

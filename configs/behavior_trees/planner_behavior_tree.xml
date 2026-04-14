@@ -14,14 +14,6 @@
         <HasStartAssignedBehavior />
         <UseStartAssignedBehavior />
       </Sequence>
-      <Sequence name="goal_main_road_defaults_to_primary">
-        <GoalZoneTypeEquals zone_type="TrackMainRoad" />
-        <SetPreferredProfile profile="primary_profile" />
-      </Sequence>
-      <Sequence name="goal_maneuvering_defaults_to_parking">
-        <GoalZoneTypeEquals zone_type="ManeuveringZone" />
-        <SetPreferredProfile profile="parking_profile" />
-      </Sequence>
       <SetPreferredProfile profile="primary_profile" />
     </Fallback>
   </BehaviorTree>

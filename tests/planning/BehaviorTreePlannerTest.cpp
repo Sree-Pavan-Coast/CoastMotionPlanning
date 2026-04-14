@@ -169,13 +169,37 @@ TEST(BehaviorTreePlannerTest, RelaxedProfileDoesNotRetryAgain) {
     EXPECT_EQ(result.attempted_profiles[0], "relaxed_profile");
 }
 
-TEST(BehaviorTreePlannerTest, InvalidGoalZoneHintFallsBackToZoneTypeDefault) {
+TEST(BehaviorTreePlannerTest, InvalidGoalZoneHintFallsBackToGlobalDefaultProfile) {
     auto orchestrator = makeOrchestrator();
 
     PlanningRequestContext request;
     request.intent = PlanningIntent::NORMAL;
     request.start_zone = makeManeuveringZone();
     request.goal_zone = makeTrackZone("not_in_catalog");
+
+    const BehaviorTreePlanResult result = orchestrator.run(
+        request,
+        [](const PlanningAttempt& attempt) {
+            return PlannerRunResult{
+                attempt.profile == "primary_profile",
+                attempt.profile == "primary_profile" ? "planned" : "unexpected profile"
+            };
+        });
+
+    EXPECT_TRUE(result.success);
+    EXPECT_EQ(result.preferred_profile, "primary_profile");
+    EXPECT_EQ(result.selected_profile, "primary_profile");
+    ASSERT_EQ(result.attempted_profiles.size(), 1u);
+    EXPECT_EQ(result.attempted_profiles[0], "primary_profile");
+}
+
+TEST(BehaviorTreePlannerTest, MissingZoneHintsFallBackToGlobalDefaultProfile) {
+    auto orchestrator = makeOrchestrator();
+
+    PlanningRequestContext request;
+    request.intent = PlanningIntent::NORMAL;
+    request.start_zone = makeManeuveringZone();
+    request.goal_zone = makeTrackZone();
 
     const BehaviorTreePlanResult result = orchestrator.run(
         request,

@@ -22,7 +22,7 @@ public:
     // Computes orientation between consecutive points and stores them as Pose2d
     void addLaneFromPoints(const std::vector<geometry::Point2d>& points);
 
-    std::string getDefaultPlannerBehavior() const override { return "primary_profile"; }
+    std::string getDefaultPlannerBehavior() const override { return ""; }
 
     /// Track road zones activate: static_obstacles, inflation, lane_centerline_cost,
     /// holonomic heuristic. Lane centerline biases the robot toward lane centers.
@@ -35,8 +35,9 @@ public:
         };
     }
 
-    /// Only forward motion is allowed in a track road zone.
-    bool isReverseAllowed() const override { return false; }
+    /// No inherent motion-direction restriction. The selected planner profile
+    /// decides whether reverse is allowed for this zone type.
+    bool isReverseAllowed() const override { return true; }
 
 private:
     std::vector<std::vector<math::Pose2d>> lanes_;

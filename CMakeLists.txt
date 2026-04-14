@@ -120,6 +120,22 @@ set(BTCPP_SQLITE_LOGGING OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(behaviortree_cpp)
 
+# Fetch nlohmann/json for local API serialization
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
+# Fetch cpp-httplib for the local browser visualizer server
+FetchContent_Declare(
+    cpp_httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG        v0.17.3
+)
+FetchContent_MakeAvailable(cpp_httplib)
+
 enable_testing()
 
 # Define the static library
@@ -171,6 +187,23 @@ target_link_libraries(${PROJECT_NAME} PRIVATE behaviortree_cpp)
 # Optional: Add compiler warnings for high quality code
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_library(coast_motion_planning_visualizer STATIC
+    src/visualizer/planner_visualizer_service.cpp
+    src/visualizer/planner_visualizer_server.cpp
+)
+target_include_directories(coast_motion_planning_visualizer PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(coast_motion_planning_visualizer PUBLIC
+    ${PROJECT_NAME}
+    httplib::httplib
+    nlohmann_json::nlohmann_json
+)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(coast_motion_planning_visualizer PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 # ==============================================================================

@@ -5,10 +5,16 @@
 #include <string>
 #include <vector>
 
+#include <boost/geometry/algorithms/envelope.hpp>
+#include <grid_map_core/grid_map_core.hpp>
+
+#include "coastmotionplanning/costs/costmap_types.hpp"
+#include "coastmotionplanning/costs/zone_constraints_layer.hpp"
 #include "coastmotionplanning/math/angle.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
 #include "coastmotionplanning/planning/planner_behavior_resolver.hpp"
 #include "coastmotionplanning/planning/planner_behavior_set.hpp"
+#include "coastmotionplanning/costs/zone_selector.hpp"
 #include "coastmotionplanning/zones/maneuvering_zone.hpp"
 #include "coastmotionplanning/zones/track_main_road.hpp"
 
@@ -71,14 +77,55 @@ Pose2d makePose(double x, double y) {
     return Pose2d{x, y, Angle::from_degrees(0.0)};
 }
 
+grid_map::GridMap buildZoneConstraintCostmap(
+    const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>>& zones) {
+    std::vector<Polygon2d> polygons;
+    polygons.reserve(zones.size());
+    for (const auto& zone : zones) {
+        polygons.push_back(zone->getPolygon());
+    }
+
+    const Polygon2d search_boundary =
+        coastmotionplanning::costs::ZoneSelector::computeConcaveHull(polygons, 0.0);
+
+    coastmotionplanning::geometry::Box2d bbox;
+    coastmotionplanning::geometry::bg::envelope(search_boundary, bbox);
+
+    constexpr double kMarginM = 1.0;
+    const double min_x =
+        coastmotionplanning::geometry::bg::get<coastmotionplanning::geometry::bg::min_corner, 0>(
+            bbox) - kMarginM;
+    const double min_y =
+        coastmotionplanning::geometry::bg::get<coastmotionplanning::geometry::bg::min_corner, 1>(
+            bbox) - kMarginM;
+    const double max_x =
+        coastmotionplanning::geometry::bg::get<coastmotionplanning::geometry::bg::max_corner, 0>(
+            bbox) + kMarginM;
+    const double max_y =
+        coastmotionplanning::geometry::bg::get<coastmotionplanning::geometry::bg::max_corner, 1>(
+            bbox) + kMarginM;
+
+    grid_map::GridMap costmap;
+    costmap.setFrameId("world");
+    costmap.setGeometry(
+        grid_map::Length(max_x - min_x, max_y - min_y),
+        0.1,
+        grid_map::Position((min_x + max_x) / 2.0, (min_y + max_y) / 2.0));
+    coastmotionplanning::costs::ZoneConstraintsLayer::build(costmap, zones, search_boundary);
+    return costmap;
+}
+
 TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
     const PlannerBehaviorSet behavior_set = loadBehaviorSet();
 
     const auto& primary = behavior_set.get("primary_profile");
     const auto& parking = behavior_set.get("parking_profile");
 
-    EXPECT_EQ(primary.planner.max_planning_time_ms, 200);
+    EXPECT_EQ(primary.planner.max_planning_time_ms, 2000);
     EXPECT_DOUBLE_EQ(primary.planner.step_size_m, 0.5);
+    EXPECT_FALSE(primary.planner.only_forward_path);
+    EXPECT_DOUBLE_EQ(primary.planner.weight_gear_change, 4.0);
+    EXPECT_DOUBLE_EQ(primary.planner.min_path_len_in_same_motion, 1.0);
     EXPECT_DOUBLE_EQ(primary.costmap.resolution_m, 0.1);
     EXPECT_EQ(primary.motion_primitives.num_angle_bins, 72);
     EXPECT_EQ(primary.collision_checker.collision_mode, "strict");
@@ -87,6 +134,9 @@ TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
     EXPECT_EQ(parking.planner.max_planning_time_ms, 100);
     EXPECT_DOUBLE_EQ(parking.planner.xy_grid_resolution_m, 0.05);
     EXPECT_DOUBLE_EQ(parking.planner.yaw_grid_resolution_deg, 2.5);
+    EXPECT_FALSE(parking.planner.only_forward_path);
+    EXPECT_DOUBLE_EQ(parking.planner.weight_gear_change, 1.0);
+    EXPECT_DOUBLE_EQ(parking.planner.min_path_len_in_same_motion, 0.5);
     EXPECT_EQ(parking.motion_primitives.num_angle_bins, 144);
     EXPECT_TRUE(parking.isLayerActive("inflation"));
     EXPECT_FALSE(parking.isLayerActive("lane_centerline_cost"));
@@ -104,9 +154,10 @@ TEST(PlannerBehaviorResolverTest, KeepsCurrentBehaviorWhenSuccessorRemainsInCurr
     const auto other_zone = makeTrackZone(10.0, 0.0, 20.0, 10.0);
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         current_zone, other_zone};
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
 
     const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-        makePose(5.0, 5.0), current_zone, "parking_profile", zones, behavior_set);
+        makePose(5.0, 5.0), costmap, current_zone, "parking_profile", zones, behavior_set);
 
     EXPECT_FALSE(resolved.switched_zone);
     EXPECT_EQ(resolved.zone, current_zone);
@@ -115,32 +166,34 @@ TEST(PlannerBehaviorResolverTest, KeepsCurrentBehaviorWhenSuccessorRemainsInCurr
     EXPECT_EQ(resolved.profile->planner.max_planning_time_ms, 100);
 }
 
-TEST(PlannerBehaviorResolverTest, SwitchesWhenSuccessorMovesIntoAnotherZoneInterior) {
+TEST(PlannerBehaviorResolverTest, SwitchesZoneButKeepsCurrentBehaviorWhenSuccessorZoneHasNoAssignment) {
     const PlannerBehaviorSet behavior_set = loadBehaviorSet();
     const auto current_zone = makeManeuveringZone(0.0, 0.0, 10.0, 10.0);
     const auto other_zone = makeTrackZone(10.0, 0.0, 20.0, 10.0);
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         current_zone, other_zone};
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
 
     const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-        makePose(15.0, 5.0), current_zone, "parking_profile", zones, behavior_set);
+        makePose(15.0, 5.0), costmap, current_zone, "parking_profile", zones, behavior_set);
 
     EXPECT_TRUE(resolved.switched_zone);
     EXPECT_EQ(resolved.zone, other_zone);
-    EXPECT_EQ(resolved.behavior_name, "primary_profile");
+    EXPECT_EQ(resolved.behavior_name, "parking_profile");
     ASSERT_NE(resolved.profile, nullptr);
-    EXPECT_EQ(resolved.profile->motion_primitives.num_angle_bins, 72);
+    EXPECT_EQ(resolved.profile->motion_primitives.num_angle_bins, 144);
 }
 
-TEST(PlannerBehaviorResolverTest, KeepsCurrentBehaviorOnZoneBoundary) {
+TEST(PlannerBehaviorResolverTest, KeepsCurrentBehaviorInTransitionSpace) {
     const PlannerBehaviorSet behavior_set = loadBehaviorSet();
     const auto current_zone = makeManeuveringZone(0.0, 0.0, 10.0, 10.0);
-    const auto other_zone = makeTrackZone(10.0, 0.0, 20.0, 10.0);
+    const auto other_zone = makeTrackZone(12.0, 0.0, 22.0, 10.0);
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         current_zone, other_zone};
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
 
     const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-        makePose(10.0, 5.0), current_zone, "parking_profile", zones, behavior_set);
+        makePose(11.0, 5.0), costmap, current_zone, "parking_profile", zones, behavior_set);
 
     EXPECT_FALSE(resolved.switched_zone);
     EXPECT_EQ(resolved.zone, current_zone);
@@ -153,10 +206,11 @@ TEST(PlannerBehaviorResolverTest, ThrowsWhenResolvedZoneBehaviorIsMissingFromCat
     const auto other_zone = makeTrackZone(10.0, 0.0, 20.0, 10.0, "missing_profile");
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         current_zone, other_zone};
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
 
     EXPECT_THROW(
         PlannerBehaviorResolver::resolve(
-            makePose(15.0, 5.0), current_zone, "parking_profile", zones, behavior_set),
+            makePose(15.0, 5.0), costmap, current_zone, "parking_profile", zones, behavior_set),
         std::runtime_error);
 }
 
@@ -166,15 +220,16 @@ TEST(PlannerBehaviorResolverTest, OverlappingZonesPreserveFirstMatchOrdering) {
     const auto current_zone = makeTrackZone(2.0, 2.0, 8.0, 8.0);
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         first_zone, current_zone};
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
 
     const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-        makePose(5.0, 5.0), current_zone, "primary_profile", zones, behavior_set);
+        makePose(5.0, 5.0), costmap, current_zone, "primary_profile", zones, behavior_set);
 
     EXPECT_TRUE(resolved.switched_zone);
     EXPECT_EQ(resolved.zone, first_zone);
-    EXPECT_EQ(resolved.behavior_name, "parking_profile");
+    EXPECT_EQ(resolved.behavior_name, "primary_profile");
     ASSERT_NE(resolved.profile, nullptr);
-    EXPECT_EQ(resolved.profile->planner.max_planning_time_ms, 100);
+    EXPECT_EQ(resolved.profile->planner.max_planning_time_ms, 2000);
 }
 
 } // namespace

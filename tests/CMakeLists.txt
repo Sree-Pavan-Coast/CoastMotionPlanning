@@ -94,7 +94,13 @@ target_compile_definitions(
 gtest_discover_tests(behavior_tree_planner_test)
 
 add_executable(planner_behavior_resolver_test planning/PlannerBehaviorResolverTest.cpp)
-target_link_libraries(planner_behavior_resolver_test PRIVATE gtest_main coast_motion_planning)
+target_link_libraries(
+    planner_behavior_resolver_test
+    PRIVATE
+        gtest_main
+        coast_motion_planning
+        grid_map_core
+)
 target_compile_definitions(
     planner_behavior_resolver_test
     PRIVATE COAST_REPO_ROOT="${CMAKE_SOURCE_DIR}"
@@ -108,3 +114,19 @@ target_compile_definitions(
     PRIVATE COAST_REPO_ROOT="${CMAKE_SOURCE_DIR}"
 )
 gtest_discover_tests(hybrid_a_star_planner_test)
+
+add_executable(planner_visualizer_service_test visualizer/PlannerVisualizerServiceTest.cpp)
+target_link_libraries(planner_visualizer_service_test PRIVATE gtest_main coast_motion_planning_visualizer)
+target_compile_definitions(
+    planner_visualizer_service_test
+    PRIVATE COAST_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
+gtest_discover_tests(planner_visualizer_service_test)
+
+add_executable(planner_visualizer_server_test visualizer/PlannerVisualizerServerTest.cpp)
+target_link_libraries(planner_visualizer_server_test PRIVATE gtest_main coast_motion_planning_visualizer)
+target_compile_definitions(
+    planner_visualizer_server_test
+    PRIVATE COAST_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
+gtest_discover_tests(planner_visualizer_server_test)

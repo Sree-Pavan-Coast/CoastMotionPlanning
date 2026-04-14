@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <grid_map_core/grid_map_core.hpp>
+
 #include "coastmotionplanning/math/pose2d.hpp"
 #include "coastmotionplanning/planning/planner_behavior_profile.hpp"
 #include "coastmotionplanning/planning/planner_behavior_set.hpp"
@@ -23,6 +25,7 @@ class PlannerBehaviorResolver {
 public:
     static ResolvedPlannerBehavior resolve(
         const math::Pose2d& successor_pose,
+        const grid_map::GridMap& costmap,
         const std::shared_ptr<zones::Zone>& current_zone,
         const std::string& current_behavior_name,
         const std::vector<std::shared_ptr<zones::Zone>>& candidate_zones,

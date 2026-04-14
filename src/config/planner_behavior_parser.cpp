@@ -161,14 +161,18 @@ planning::PlannerBehaviorProfile PlannerBehaviorParser::parseProfile(
     profile.planner.xy_grid_resolution_m = planner["xy_grid_resolution_m"].as<double>();
     profile.planner.yaw_grid_resolution_deg = planner["yaw_grid_resolution_deg"].as<double>();
     profile.planner.step_size_m = planner["step_size_m"].as<double>();
+    profile.planner.only_forward_path = planner["only_forward_path"].as<bool>();
     profile.planner.weight_forward = planner["weight_forward"].as<double>();
     profile.planner.weight_reverse = planner["weight_reverse"].as<double>();
     profile.planner.weight_steer = planner["weight_steer"].as<double>();
     profile.planner.weight_steer_change = planner["weight_steer_change"].as<double>();
+    profile.planner.weight_gear_change = planner["weight_gear_change"].as<double>();
     profile.planner.analytic_expansion_max_length_m =
         planner["analytic_expansion_max_length_m"].as<double>();
     profile.planner.analytic_expansion_ratio =
         planner["analytic_expansion_ratio"].as<double>();
+    profile.planner.min_path_len_in_same_motion =
+        planner["min_path_len_in_same_motion"].as<double>();
 
     const YAML::Node costmap = profile_node["costmap"];
     profile.costmap.resolution_m = costmap["resolution_m"].as<double>();
@@ -189,10 +193,6 @@ planning::PlannerBehaviorProfile PlannerBehaviorParser::parseProfile(
     const YAML::Node motion_primitives = profile_node["motion_primitives"];
     profile.motion_primitives.num_angle_bins =
         motion_primitives["num_angle_bins"].as<int>();
-    profile.motion_primitives.min_turning_radius_m =
-        motion_primitives["min_turning_radius_m"].as<double>();
-    profile.motion_primitives.max_steer_angle_rad =
-        motion_primitives["max_steer_angle_rad"].as<double>();
 
     const YAML::Node non_holonomic_heuristic = profile_node["non_holonomic_heuristic"];
     profile.non_holonomic_heuristic.lut_grid_size =

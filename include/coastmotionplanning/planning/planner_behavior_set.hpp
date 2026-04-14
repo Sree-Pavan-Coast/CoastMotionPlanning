@@ -17,6 +17,9 @@ public:
 
     bool contains(const std::string& behavior_name) const;
     const PlannerBehaviorProfile& get(const std::string& behavior_name) const;
+    void overrideMotionPrimitiveConstraints(double min_turning_radius_m,
+                                            double max_steer_angle_rad);
+    void setMinimumPlanningTimeMs(int minimum_planning_time_ms);
     const std::vector<std::string>& names() const { return names_; }
 
 private:

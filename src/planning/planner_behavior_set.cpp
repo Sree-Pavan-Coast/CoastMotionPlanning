@@ -43,5 +43,28 @@ const PlannerBehaviorProfile& PlannerBehaviorSet::get(const std::string& behavio
     return it->second;
 }
 
+void PlannerBehaviorSet::overrideMotionPrimitiveConstraints(double min_turning_radius_m,
+                                                            double max_steer_angle_rad) {
+    if (min_turning_radius_m <= 0.0 || max_steer_angle_rad <= 0.0) {
+        throw std::runtime_error("Motion primitive constraint overrides must be positive.");
+    }
+
+    for (auto& entry : profiles_) {
+        entry.second.motion_primitives.min_turning_radius_m = min_turning_radius_m;
+        entry.second.motion_primitives.max_steer_angle_rad = max_steer_angle_rad;
+    }
+}
+
+void PlannerBehaviorSet::setMinimumPlanningTimeMs(int minimum_planning_time_ms) {
+    if (minimum_planning_time_ms <= 0) {
+        throw std::runtime_error("Minimum planning time must be positive.");
+    }
+
+    for (auto& entry : profiles_) {
+        entry.second.planner.max_planning_time_ms =
+            std::max(entry.second.planner.max_planning_time_ms, minimum_planning_time_ms);
+    }
+}
+
 } // namespace planning
 } // namespace coastmotionplanning

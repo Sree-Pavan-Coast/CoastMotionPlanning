@@ -33,15 +33,16 @@ public:
     // =========================================================================
 
     /// Returns the built-in planner behavior for this zone type.
-    /// This is used whenever the YAML does not specify an explicit behavior or
-    /// when the YAML explicitly requests "default".
+    /// This may be empty when the zone type has no inherent profile and
+    /// callers should rely on explicit YAML or the current/global planner choice.
     virtual std::string getDefaultPlannerBehavior() const = 0;
 
     /// Returns the costmap layer names that this zone type activates.
     /// The CostmapBuilder will only build these layers for cells inside this zone.
     virtual std::vector<std::string> getActiveLayers() const = 0;
 
-    /// Whether reverse motion is allowed in this zone.
+    /// Whether this zone type imposes its own reverse-motion restriction.
+    /// Returning true means the planner profile is the only gate.
     virtual bool isReverseAllowed() const = 0;
 
 protected:

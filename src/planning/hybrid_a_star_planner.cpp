@@ -38,6 +38,7 @@ using motion_primitives::MotionTableConfig;
 using motion_primitives::TurnDirection;
 
 constexpr double LARGE_COST = 1e9;
+constexpr double MOTION_EPSILON = 1e-6;
 
 enum class TurnClass {
     UNKNOWN = 0,
@@ -55,18 +56,29 @@ struct SearchNode {
     std::shared_ptr<zones::Zone> zone;
     std::string behavior_name;
     TurnClass last_turn_class{TurnClass::UNKNOWN};
+    bool has_inbound_motion{false};
     common::MotionDirection inbound_motion{common::MotionDirection::Forward};
+    double same_motion_length_m{0.0};
+    double same_motion_remaining_to_change_m{0.0};
 };
 
 struct DiscreteStateKey {
     int x_idx{0};
     int y_idx{0};
     int theta_idx{0};
+    int motion_state{0};
+    int turn_class{0};
+    int same_motion_length_bucket{0};
+    int same_motion_remaining_bucket{0};
 
     bool operator==(const DiscreteStateKey& other) const {
         return x_idx == other.x_idx &&
                y_idx == other.y_idx &&
-               theta_idx == other.theta_idx;
+               theta_idx == other.theta_idx &&
+               motion_state == other.motion_state &&
+               turn_class == other.turn_class &&
+               same_motion_length_bucket == other.same_motion_length_bucket &&
+               same_motion_remaining_bucket == other.same_motion_remaining_bucket;
     }
 };
 
@@ -75,6 +87,12 @@ struct DiscreteStateKeyHash {
         size_t seed = std::hash<int>()(key.x_idx);
         seed ^= std::hash<int>()(key.y_idx) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
         seed ^= std::hash<int>()(key.theta_idx) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int>()(key.motion_state) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int>()(key.turn_class) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^=
+            std::hash<int>()(key.same_motion_length_bucket) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^=
+            std::hash<int>()(key.same_motion_remaining_bucket) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
         return seed;
     }
 };
@@ -146,12 +164,39 @@ common::MotionDirection motionDirectionForPrimitive(TurnDirection turn_direction
 
 DiscreteStateKey discretizeState(const math::Pose2d& pose,
                                  unsigned int heading_bin,
-                                 double xy_resolution_m) {
+                                 const SearchNode& node,
+                                 double xy_resolution_m,
+                                 double global_max_same_motion_length_m) {
+    const auto discretizeMetric = [&](double value) {
+        if (global_max_same_motion_length_m <= MOTION_EPSILON ||
+            xy_resolution_m <= MOTION_EPSILON) {
+            return 0;
+        }
+        const double capped = std::clamp(value, 0.0, global_max_same_motion_length_m);
+        return static_cast<int>(std::lround(capped / xy_resolution_m));
+    };
+
     return DiscreteStateKey{
         static_cast<int>(std::lround(pose.x / xy_resolution_m)),
         static_cast<int>(std::lround(pose.y / xy_resolution_m)),
-        static_cast<int>(heading_bin)
+        static_cast<int>(heading_bin),
+        node.has_inbound_motion
+            ? (node.inbound_motion == common::MotionDirection::Forward ? 1 : 2)
+            : 0,
+        static_cast<int>(node.last_turn_class),
+        discretizeMetric(node.same_motion_length_m),
+        discretizeMetric(node.same_motion_remaining_to_change_m)
     };
+}
+
+double computeGlobalMaxSameMotionLength(const PlannerBehaviorSet& behavior_set) {
+    double max_length = 0.0;
+    for (const auto& behavior_name : behavior_set.names()) {
+        max_length = std::max(
+            max_length,
+            behavior_set.get(behavior_name).planner.min_path_len_in_same_motion);
+    }
+    return max_length;
 }
 
 robot::RobotState makeRobotState(const math::Pose2d& pose) {
@@ -221,8 +266,9 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
                        TurnDirection turn_direction,
                        double travel_m) {
     double edge_cost = travel_m;
-    const bool reverse_motion =
-        motionDirectionForPrimitive(turn_direction) == common::MotionDirection::Reverse;
+    const common::MotionDirection successor_motion =
+        motionDirectionForPrimitive(turn_direction);
+    const bool reverse_motion = successor_motion == common::MotionDirection::Reverse;
 
     edge_cost *= reverse_motion
         ? profile.planner.weight_reverse
@@ -238,6 +284,10 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
         edge_cost += profile.planner.weight_steer_change * travel_m;
     }
 
+    if (parent.has_inbound_motion && parent.inbound_motion != successor_motion) {
+        edge_cost += profile.planner.weight_gear_change;
+    }
+
     if (profile.isLayerActive(costs::CostmapLayerNames::INFLATION)) {
         edge_cost += travel_m * (readLayerCost(costmap, costs::CostmapLayerNames::INFLATION,
                                                successor_position) / CostValues::LETHAL);
@@ -250,6 +300,65 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
     }
 
     return edge_cost;
+}
+
+bool canChangeMotionDirection(const SearchNode& node,
+                              common::MotionDirection successor_motion) {
+    return !node.has_inbound_motion ||
+           node.inbound_motion == successor_motion ||
+           node.same_motion_remaining_to_change_m <= MOTION_EPSILON;
+}
+
+double computeNextSameMotionLength(const SearchNode& parent,
+                                   common::MotionDirection successor_motion,
+                                   double travel_m,
+                                   double global_max_same_motion_length_m) {
+    const double unclamped_length =
+        (!parent.has_inbound_motion || parent.inbound_motion != successor_motion)
+        ? travel_m
+        : parent.same_motion_length_m + travel_m;
+    if (global_max_same_motion_length_m <= MOTION_EPSILON) {
+        return 0.0;
+    }
+    return std::min(unclamped_length, global_max_same_motion_length_m);
+}
+
+double computeNextSameMotionRemainingToChange(
+    const SearchNode& parent,
+    const PlannerBehaviorProfile& current_profile,
+    const PlannerBehaviorProfile& successor_profile,
+    common::MotionDirection successor_motion,
+    double travel_m) {
+    if (!parent.has_inbound_motion || parent.inbound_motion != successor_motion) {
+        const double new_segment_min = std::max(
+            current_profile.planner.min_path_len_in_same_motion,
+            successor_profile.planner.min_path_len_in_same_motion);
+        return std::max(0.0, new_segment_min - travel_m);
+    }
+
+    return std::max(
+        0.0,
+        std::max(
+            parent.same_motion_remaining_to_change_m,
+            successor_profile.planner.min_path_len_in_same_motion -
+                parent.same_motion_length_m) -
+            travel_m);
+}
+
+bool isTerminalMotionSegmentValid(const SearchNode& node) {
+    return !node.has_inbound_motion ||
+           node.same_motion_remaining_to_change_m <= MOTION_EPSILON;
+}
+
+bool allowsReverseMotion(const PlannerBehaviorProfile& profile,
+                         const std::shared_ptr<zones::Zone>& zone) {
+    return !profile.planner.only_forward_path &&
+           (zone == nullptr || zone->isReverseAllowed());
+}
+
+bool allowsReverseMotion(const ResolvedPlannerBehavior& resolved_behavior) {
+    return resolved_behavior.profile != nullptr &&
+           allowsReverseMotion(*resolved_behavior.profile, resolved_behavior.zone);
 }
 
 bool isGoalSatisfied(const SearchNode& node,
@@ -315,6 +424,12 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
 
     const PlannerBehaviorProfile& initial_profile =
         behavior_set_.get(request.initial_behavior_name);
+    if (initial_profile.motion_primitives.min_turning_radius_m <= 0.0 ||
+        initial_profile.motion_primitives.max_steer_angle_rad <= 0.0) {
+        failure_result.detail =
+            "Motion primitive constraints were not initialized from the selected robot model.";
+        return failure_result;
+    }
 
     ZoneSelectionResult selection;
     try {
@@ -375,13 +490,15 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     const double xy_resolution_m = initial_profile.planner.xy_grid_resolution_m;
     const double yaw_bin_size_rad = motion_table.getBinSize();
     const double goal_distance_tolerance = initial_profile.planner.step_size_m;
+    const double global_max_same_motion_length_m =
+        computeGlobalMaxSameMotionLength(behavior_set_);
     const auto deadline = Clock::now() + std::chrono::milliseconds(
         initial_profile.planner.max_planning_time_ms);
 
     const double normalized_start_yaw = normalizeAngleUnsigned(request.start.theta.radians());
     const unsigned int start_heading_bin =
         motion_table.getClosestAngularBin(normalized_start_yaw);
-    const HeuristicModel start_model = start_zone->isReverseAllowed()
+    const HeuristicModel start_model = allowsReverseMotion(initial_profile, start_zone)
         ? HeuristicModel::REEDS_SHEPP
         : HeuristicModel::DUBINS;
     const double start_h = std::max(
@@ -403,7 +520,14 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     open_queue.push(OpenEntry{start_node.g + start_node.h, start_node.h, 0, 0});
 
     std::unordered_map<DiscreteStateKey, double, DiscreteStateKeyHash> best_g_by_key;
-    best_g_by_key.emplace(discretizeState(request.start, start_heading_bin, xy_resolution_m), 0.0);
+    best_g_by_key.emplace(
+        discretizeState(
+            request.start,
+            start_heading_bin,
+            start_node,
+            xy_resolution_m,
+            global_max_same_motion_length_m),
+        0.0);
 
     uint64_t insertion_order = 1;
 
@@ -418,7 +542,11 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
 
         const SearchNode current_node = nodes[entry.node_index];
         const DiscreteStateKey current_key = discretizeState(
-            current_node.pose, current_node.heading_bin, xy_resolution_m);
+            current_node.pose,
+            current_node.heading_bin,
+            current_node,
+            xy_resolution_m,
+            global_max_same_motion_length_m);
         const auto best_it = best_g_by_key.find(current_key);
         if (best_it == best_g_by_key.end() || current_node.g > best_it->second + 1e-6) {
             continue;
@@ -427,9 +555,13 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         if (isGoalSatisfied(current_node,
                             request.goal,
                             goal_distance_tolerance,
-                            yaw_bin_size_rad)) {
+                            yaw_bin_size_rad) &&
+            isTerminalMotionSegmentValid(current_node)) {
             return reconstructResult(nodes, static_cast<int>(entry.node_index));
         }
+
+        const PlannerBehaviorProfile& current_profile =
+            behavior_set_.get(current_node.behavior_name);
 
         const auto projections = motion_table.getProjections(
             static_cast<float>(current_node.pose.x / xy_resolution_m),
@@ -455,6 +587,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
 
             const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
                 successor_pose,
+                costmap,
                 current_node.zone,
                 current_node.behavior_name,
                 selection.selected_zones,
@@ -476,6 +609,11 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             const double travel_m =
                 static_cast<double>(motion_table.getTravelCost(static_cast<unsigned int>(primitive_idx))) *
                 xy_resolution_m;
+            const common::MotionDirection successor_motion =
+                motionDirectionForPrimitive(projection.turn_dir);
+            if (!canChangeMotionDirection(current_node, successor_motion)) {
+                continue;
+            }
             const double edge_cost = computeEdgeCost(
                 costmap,
                 *resolved.profile,
@@ -485,12 +623,19 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 travel_m);
             const double new_g = current_node.g + edge_cost;
 
-            const DiscreteStateKey successor_key = discretizeState(
-                successor_pose, successor_heading_bin, xy_resolution_m);
-            const auto existing = best_g_by_key.find(successor_key);
-            if (existing != best_g_by_key.end() && new_g >= existing->second - 1e-6) {
-                continue;
-            }
+            const double successor_same_motion_length_m =
+                computeNextSameMotionLength(
+                    current_node,
+                    successor_motion,
+                    travel_m,
+                    global_max_same_motion_length_m);
+            const double successor_same_motion_remaining_to_change_m =
+                computeNextSameMotionRemainingToChange(
+                    current_node,
+                    current_profile,
+                    *resolved.profile,
+                    successor_motion,
+                    travel_m);
 
             const double holonomic_h =
                 computeHolonomicHeuristic(costmap, successor_position);
@@ -510,7 +655,22 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             successor_node.zone = resolved.zone;
             successor_node.behavior_name = resolved.behavior_name;
             successor_node.last_turn_class = classifyTurn(projection.turn_dir);
+            successor_node.has_inbound_motion = true;
             successor_node.inbound_motion = motionDirectionForPrimitive(projection.turn_dir);
+            successor_node.same_motion_length_m = successor_same_motion_length_m;
+            successor_node.same_motion_remaining_to_change_m =
+                successor_same_motion_remaining_to_change_m;
+
+            const DiscreteStateKey successor_key = discretizeState(
+                successor_pose,
+                successor_heading_bin,
+                successor_node,
+                xy_resolution_m,
+                global_max_same_motion_length_m);
+            const auto existing = best_g_by_key.find(successor_key);
+            if (existing != best_g_by_key.end() && new_g >= existing->second - 1e-6) {
+                continue;
+            }
 
             const size_t successor_index = nodes.size();
             nodes.push_back(std::move(successor_node));
@@ -530,7 +690,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
 
 HeuristicModel HybridAStarPlanner::selectHeuristicModel(
     const ResolvedPlannerBehavior& resolved_behavior) {
-    if (resolved_behavior.zone != nullptr && resolved_behavior.zone->isReverseAllowed()) {
+    if (allowsReverseMotion(resolved_behavior)) {
         return HeuristicModel::REEDS_SHEPP;
     }
     return HeuristicModel::DUBINS;
@@ -539,7 +699,7 @@ HeuristicModel HybridAStarPlanner::selectHeuristicModel(
 bool HybridAStarPlanner::isPrimitiveAllowed(
     TurnDirection turn_direction,
     const ResolvedPlannerBehavior& resolved_behavior) {
-    if (resolved_behavior.zone != nullptr && !resolved_behavior.zone->isReverseAllowed()) {
+    if (!allowsReverseMotion(resolved_behavior)) {
         return turn_direction != TurnDirection::REVERSE &&
                turn_direction != TurnDirection::REV_LEFT &&
                turn_direction != TurnDirection::REV_RIGHT;

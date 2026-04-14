@@ -34,7 +34,23 @@ public:
      */
     static std::vector<std::shared_ptr<zones::Zone>> parse(const std::string& filepath);
 
+    /**
+     * @brief Parses map YAML content from memory and returns a list of zone objects.
+     *
+     * @param yaml_content YAML document contents.
+     * @param source_label Optional label used in error messages.
+     * @return std::vector<std::shared_ptr<zones::Zone>> The parsed zones.
+     * @throws std::runtime_error If the YAML content is invalid.
+     */
+    static std::vector<std::shared_ptr<zones::Zone>> parseFromString(
+        const std::string& yaml_content,
+        const std::string& source_label = "<memory>");
+
 private:
+    static std::vector<std::shared_ptr<zones::Zone>> parseDocument(
+        const YAML::Node& config,
+        const std::string& source_label);
+
     /**
      * @brief Parses the geographic origin from the YAML node.
      */

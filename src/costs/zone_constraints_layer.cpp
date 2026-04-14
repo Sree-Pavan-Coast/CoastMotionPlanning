@@ -10,14 +10,33 @@ void ZoneConstraintsLayer::build(
     const std::vector<std::shared_ptr<zones::Zone>>& selected_zones,
     const geometry::Polygon2d& search_boundary) {
 
-    (void)search_boundary;  // Reserved for future use
-
     // Add layer initialized to ZONE_NONE (lethal for anything outside zones)
     costmap.add(CostmapLayerNames::ZONE_CONSTRAINTS, ZoneConstraintValues::ZONE_NONE);
 
+    // Mark cells inside the search boundary but outside any zone as ZONE_TRANSITION
+    // so the planner can traverse gap regions between zones.
+    {
+        grid_map::Polygon gm_boundary;
+        for (const auto& pt : search_boundary.outer()) {
+            gm_boundary.addVertex(grid_map::Position(
+                geometry::bg::get<0>(pt), geometry::bg::get<1>(pt)));
+        }
+        // Remove closing vertex if present (grid_map::Polygon closes implicitly)
+        const auto& verts = gm_boundary.getVertices();
+        if (verts.size() > 1 && (verts.front() - verts.back()).norm() < 1e-9) {
+            // grid_map::Polygon doesn't provide removeVertex, but the closing
+            // duplicate is harmless for PolygonIterator — leave it.
+        }
+        for (grid_map::PolygonIterator it(costmap, gm_boundary);
+             !it.isPastEnd(); ++it) {
+            costmap.at(CostmapLayerNames::ZONE_CONSTRAINTS, *it) =
+                ZoneConstraintValues::ZONE_TRANSITION;
+        }
+    }
+
     // For each zone, stamp cells with the zone's index (0-based).
-    // The planner can look up the zone object by this index to query
-    // isReverseAllowed(), getActiveLayers(), etc.
+    // Zones overwrite transition cells, but not previously stamped zone cells,
+    // which preserves first-zone ordering when polygons overlap.
     for (size_t zone_idx = 0; zone_idx < selected_zones.size(); ++zone_idx) {
         const auto& zone = selected_zones[zone_idx];
 
@@ -42,7 +61,10 @@ void ZoneConstraintsLayer::build(
         float zone_value = static_cast<float>(zone_idx);
         for (grid_map::PolygonIterator it(costmap, gm_polygon);
              !it.isPastEnd(); ++it) {
-            costmap.at(CostmapLayerNames::ZONE_CONSTRAINTS, *it) = zone_value;
+            float& cell = costmap.at(CostmapLayerNames::ZONE_CONSTRAINTS, *it);
+            if (cell >= ZoneConstraintValues::ZONE_TRANSITION) {
+                cell = zone_value;
+            }
         }
     }
 }

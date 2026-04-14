@@ -10,12 +10,15 @@ planner:
   xy_grid_resolution_m: 0.1
   yaw_grid_resolution_deg: 5.0
   step_size_m: 0.5
+  only_forward_path: false
   weight_forward: 1.0
   weight_reverse: 2.0
   weight_steer: 0.5
   weight_steer_change: 1.5
+  weight_gear_change: 2.0
   analytic_expansion_max_length_m: 20.0
   analytic_expansion_ratio: 0.35     # try analytic expansion every N nodes
+  min_path_len_in_same_motion: 1.0   # contiguous forward/reverse run length before a gear flip
 
 # ---- Costmap ----
 costmap:
@@ -36,8 +39,7 @@ collision_checker:
 # ---- Motion Primitives ----
 motion_primitives:
   num_angle_bins: 72                 # heading discretization (360/5 = 72)
-  min_turning_radius_m: 8.0          # from robot kinematic model
-  max_steer_angle_rad: 0.5           # max steering angle
+  # Turning radius and steer angle now come from the selected robot at runtime.
 
 # ---- Non-Holonomic Heuristic ----
 non_holonomic_heuristic:

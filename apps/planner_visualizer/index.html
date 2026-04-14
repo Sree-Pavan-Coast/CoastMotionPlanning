@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coast Motion Planning Visualizer</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="workspace-shell">
+    <header class="chrome-bar">
+      <div class="chrome-title">
+        <strong>Coast Motion Planning</strong>
+        <span>Planner Visualizer</span>
+      </div>
+      <div class="chrome-meta">
+        <span id="windowMapLabel">No map loaded</span>
+        <span id="windowToolLabel">Tool: Set Start</span>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <input id="mapFileInput" type="file" accept=".yaml,.yml" hidden>
+      <button id="loadMapButton" class="toolbar-button toolbar-button--primary" type="button">Load Map...</button>
+      <div class="toolbar-divider"></div>
+      <button id="setStartToolButton" class="toolbar-button is-active" type="button">Set Start</button>
+      <button id="setGoalToolButton" class="toolbar-button" type="button">Set Goal</button>
+      <button id="fitViewButton" class="toolbar-button" type="button">Fit</button>
+      <button id="resetViewButton" class="toolbar-button" type="button">Reset</button>
+      <div class="toolbar-divider"></div>
+      <button id="planButton" class="toolbar-button toolbar-button--accent" type="button">Plan Path</button>
+    </div>
+
+    <div class="workspace-body">
+      <aside class="dock dock-left">
+        <div class="dock-section">
+          <div class="dock-heading">
+            <h2>Robot</h2>
+          </div>
+          <div class="property-grid">
+            <label>
+              <span>Planner Robot</span>
+              <select id="robotSelect"></select>
+            </label>
+          </div>
+          <p id="robotHelpMessage" class="tool-help">Select the robot before placing poses and planning.</p>
+          <dl class="info-grid">
+            <div>
+              <dt>Type</dt>
+              <dd id="robotTypeLabel">-</dd>
+            </div>
+            <div>
+              <dt>Wheelbase</dt>
+              <dd id="robotWheelbaseLabel">-</dd>
+            </div>
+            <div>
+              <dt>Max Steer</dt>
+              <dd id="robotSteerLabel">-</dd>
+            </div>
+            <div>
+              <dt>Min Turn Radius</dt>
+              <dd id="robotTurningRadiusLabel">-</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="dock-section">
+          <div class="dock-heading">
+            <h2>Displays</h2>
+          </div>
+          <div class="display-list">
+            <label><input id="showGridToggle" type="checkbox" checked> Grid</label>
+            <label><input id="showZonesToggle" type="checkbox" checked> Semantic Zones</label>
+            <label><input id="showLanesToggle" type="checkbox" checked> Lane Centerlines</label>
+            <label><input id="showStartToggle" type="checkbox" checked> Start Pose</label>
+            <label><input id="showGoalToggle" type="checkbox" checked> Goal Pose</label>
+            <label><input id="showPathToggle" type="checkbox" checked> Planned Path</label>
+          </div>
+        </div>
+
+        <div class="dock-section">
+          <div class="dock-heading">
+            <h2>Map</h2>
+          </div>
+          <dl class="info-grid">
+            <div>
+              <dt>Name</dt>
+              <dd id="mapNameLabel">No map loaded</dd>
+            </div>
+            <div>
+              <dt>Bounds</dt>
+              <dd id="boundsLabel">-</dd>
+            </div>
+            <div>
+              <dt>Source File</dt>
+              <dd id="mapSourceLabel">-</dd>
+            </div>
+            <div>
+              <dt>Map ID</dt>
+              <dd id="mapIdLabel">-</dd>
+            </div>
+          </dl>
+        </div>
+      </aside>
+
+      <main class="viewport-shell">
+        <div class="viewport-frame">
+          <svg id="mapSvg" viewBox="-10 -10 20 20" aria-label="Planning map canvas">
+            <g id="mapLayers"></g>
+          </svg>
+          <div id="emptyState" class="empty-state">
+            <strong>No map loaded</strong>
+            <span>Select a robot, then load a map YAML and begin placing poses.</span>
+          </div>
+        </div>
+      </main>
+
+      <aside class="dock dock-right">
+        <div class="dock-section">
+          <div class="dock-heading">
+            <h2>Tool Properties</h2>
+            <span id="activeToolBadge" class="tool-badge">Set Start</span>
+          </div>
+          <p class="tool-help">Click in the viewport to place the active pose. Heading stays under explicit numeric control.</p>
+        </div>
+
+        <div class="dock-section">
+          <div class="dock-heading">
+            <h2>Start Pose</h2>
+          </div>
+          <div class="property-grid">
+            <label>
+              <span>X</span>
+              <input id="startX" type="text" inputmode="decimal" placeholder="0.00">
+            </label>
+            <label>
+              <span>Y</span>
+              <input id="startY" type="text" inputmode="decimal" placeholder="0.00">
+            </label>
+            <label>
+              <span>Heading (deg)</span>
+              <input id="startHeading" type="text" inputmode="decimal" value="0">
+            </label>
+          </div>
+        </div>
+
+        <div class="dock-section">
+          <div class="dock-heading">
+            <h2>Goal Pose</h2>
+          </div>
+          <div class="property-grid">
+            <label>
+              <span>X</span>
+              <input id="goalX" type="text" inputmode="decimal" placeholder="0.00">
+            </label>
+            <label>
+              <span>Y</span>
+              <input id="goalY" type="text" inputmode="decimal" placeholder="0.00">
+            </label>
+            <label>
+              <span>Heading (deg)</span>
+              <input id="goalHeading" type="text" inputmode="decimal" value="0">
+            </label>
+          </div>
+        </div>
+
+        <div class="dock-section">
+          <div class="dock-heading">
+            <h2>Planner</h2>
+            <span id="statusBadge" class="status-badge idle">Idle</span>
+          </div>
+          <p id="statusMessage" class="status-message">Load a map and define both poses to begin.</p>
+          <dl class="info-grid">
+            <div>
+              <dt>Selected Profile</dt>
+              <dd id="selectedProfileLabel">-</dd>
+            </div>
+            <div>
+              <dt>Attempted Profiles</dt>
+              <dd id="attemptedProfilesLabel">-</dd>
+            </div>
+            <div>
+              <dt>Path Poses</dt>
+              <dd id="pathPoseCountLabel">0</dd>
+            </div>
+            <div>
+              <dt>Cursor</dt>
+              <dd id="cursorWorldLabel">-</dd>
+            </div>
+          </dl>
+        </div>
+      </aside>
+    </div>
+
+    <footer class="status-bar">
+      <span id="statusBarToolLabel">Tool: Set Start</span>
+      <span id="statusBarMapLabel">Map: none</span>
+      <span id="statusBarCursorLabel">Cursor: -</span>
+      <span id="statusBarHintLabel">Click in the viewport to place the active pose.</span>
+    </footer>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

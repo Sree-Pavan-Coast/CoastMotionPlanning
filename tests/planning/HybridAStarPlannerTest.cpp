@@ -71,7 +71,8 @@ std::string readFile(const std::string& path) {
 }
 
 PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
-                                                       double min_same_motion_length_m) {
+                                                       double min_same_motion_length_m,
+                                                       const std::string& robot_name = "E_Transit") {
     const std::filesystem::path temp_dir =
         std::filesystem::temp_directory_path() / "coastmotionplanning_hybrid_astar_test";
     std::filesystem::create_directories(temp_dir);
@@ -108,7 +109,7 @@ PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
 
     return applyRobotConstraints(
         PlannerBehaviorSet::loadFromFile((temp_dir / "planner_behaviors.yaml").string()),
-        "E_Transit");
+        robot_name);
 }
 
 double straightPrimitiveLengthM(const PlannerBehaviorProfile& profile) {
@@ -147,6 +148,14 @@ std::shared_ptr<coastmotionplanning::zones::TrackMainRoad> makeTrackZone(
     const std::string& behavior = "") {
     auto zone = std::make_shared<coastmotionplanning::zones::TrackMainRoad>(
         makeRectangle(min_x, min_y, max_x, max_y), "track");
+    zone->addLaneFromPoints({
+        {min_x + 1.0, min_y + ((max_y - min_y) * 0.25)},
+        {max_x - 1.0, min_y + ((max_y - min_y) * 0.25)}
+    });
+    zone->addLaneFromPoints({
+        {max_x - 1.0, min_y + ((max_y - min_y) * 0.75)},
+        {min_x + 1.0, min_y + ((max_y - min_y) * 0.75)}
+    });
     if (!behavior.empty()) {
         zone->setPlannerBehavior(behavior);
     }
@@ -159,6 +168,33 @@ Pose2d makePose(double x, double y, double yaw_deg = 0.0) {
 
 Car makeCar() {
     return Car(2.0, 3.0, 0.5, 0.5);
+}
+
+std::vector<double> accumulateRunLengths(
+    const std::vector<Pose2d>& poses,
+    const std::vector<coastmotionplanning::common::MotionDirection>& segment_directions) {
+    std::vector<double> run_lengths;
+    if (poses.size() < 2 || segment_directions.empty()) {
+        return run_lengths;
+    }
+
+    coastmotionplanning::common::MotionDirection current_direction = segment_directions.front();
+    double current_length = 0.0;
+    for (size_t i = 0; i < segment_directions.size(); ++i) {
+        const double segment_length = std::hypot(
+            poses[i + 1].x - poses[i].x,
+            poses[i + 1].y - poses[i].y);
+        if (segment_directions[i] != current_direction) {
+            run_lengths.push_back(current_length);
+            current_direction = segment_directions[i];
+            current_length = segment_length;
+        } else {
+            current_length += segment_length;
+        }
+    }
+
+    run_lengths.push_back(current_length);
+    return run_lengths;
 }
 
 TEST(HybridAStarPlannerPolicyTest, TrackRoadWithoutForwardOnlyProfileAllowsReverse) {
@@ -378,6 +414,32 @@ TEST(HybridAStarPlannerTest, GoalMustAllowMinimumSameMotionLengthBeforeStopping)
         [](coastmotionplanning::common::MotionDirection direction) {
             return direction == coastmotionplanning::common::MotionDirection::Forward;
         }));
+}
+
+TEST(HybridAStarPlannerTest, AnalyticExpansionOutputHonorsMinimumSameMotionLength) {
+    const PlannerBehaviorSet behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(false, 5.0, "Pro_XD");
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeManeuveringZone(-5.0, -5.0, 15.0, 20.0, "primary_profile")
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(0.15, 14.4, 0.0);
+    request.goal = makePose(4.7, 4.84, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    EXPECT_NE(result.detail.find("analytic expansion"), std::string::npos);
+
+    const auto run_lengths = accumulateRunLengths(result.poses, result.segment_directions);
+    ASSERT_FALSE(run_lengths.empty());
+    for (const double run_length : run_lengths) {
+        EXPECT_GE(run_length + 1e-6, 5.0);
+    }
 }
 
 } // namespace

@@ -12,6 +12,57 @@
 namespace coastmotionplanning {
 namespace zones {
 
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kLaneDirectionToleranceRad = (5.0 * kPi) / 6.0;
+constexpr double kDirectionEpsilon = 1e-9;
+
+double normalizeAngleSigned(double angle) {
+    angle = std::fmod(angle + kPi, 2.0 * kPi);
+    if (angle < 0.0) {
+        angle += 2.0 * kPi;
+    }
+    return angle - kPi;
+}
+
+double representativeLaneHeading(const std::vector<math::Pose2d>& waypoints) {
+    if (waypoints.size() < 2) {
+        throw std::invalid_argument("TrackMainRoad lane must have at least 2 waypoints.");
+    }
+
+    const double dx = waypoints.back().x - waypoints.front().x;
+    const double dy = waypoints.back().y - waypoints.front().y;
+    if (std::hypot(dx, dy) <= kDirectionEpsilon) {
+        throw std::invalid_argument(
+            "TrackMainRoad lane start and end must define a non-zero travel direction.");
+    }
+
+    return std::atan2(dy, dx);
+}
+
+std::vector<math::Pose2d> makeLaneWaypoints(const std::vector<geometry::Point2d>& points) {
+    std::vector<math::Pose2d> lane_waypoints;
+    lane_waypoints.reserve(points.size());
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        double yaw = 0.0;
+        if (i < points.size() - 1) {
+            yaw = std::atan2(points[i + 1].y() - points[i].y(),
+                             points[i + 1].x() - points[i].x());
+        } else {
+            yaw = std::atan2(points[i].y() - points[i - 1].y(),
+                             points[i].x() - points[i - 1].x());
+        }
+        lane_waypoints.emplace_back(points[i].x(), points[i].y(),
+                                    math::Angle::from_radians(yaw));
+    }
+
+    return lane_waypoints;
+}
+
+} // namespace
+
 // =============================================================================
 // Polygon validation
 // =============================================================================
@@ -105,6 +156,27 @@ void TrackMainRoad::validateLaneWaypoints(
     }
 }
 
+void TrackMainRoad::validateLaneConfiguration(
+    const std::vector<std::vector<math::Pose2d>>& lanes) const {
+    if (lanes.size() != 2) {
+        throw std::invalid_argument(
+            "TrackMainRoad requires exactly 2 lanes (got " +
+            std::to_string(lanes.size()) + ").");
+    }
+
+    for (const auto& lane : lanes) {
+        validateLaneWaypoints(lane);
+    }
+
+    const double heading0 = representativeLaneHeading(lanes[0]);
+    const double heading1 = representativeLaneHeading(lanes[1]);
+    const double heading_delta = std::abs(normalizeAngleSigned(heading0 - heading1));
+    if (heading_delta < kLaneDirectionToleranceRad) {
+        throw std::invalid_argument(
+            "TrackMainRoad lanes must run in opposite directions.");
+    }
+}
+
 // =============================================================================
 // Constructors
 // =============================================================================
@@ -122,14 +194,14 @@ TrackMainRoad::TrackMainRoad(
     : Zone(polygon, name) {
     validatePolygon(polygon);
 
-    if (lane_point_sequences.empty()) {
-        throw std::invalid_argument(
-            "TrackMainRoad requires at least one lane.");
+    std::vector<std::vector<math::Pose2d>> lanes;
+    lanes.reserve(lane_point_sequences.size());
+    for (const auto& lane_points : lane_point_sequences) {
+        validateLanePoints(lane_points);
+        lanes.push_back(makeLaneWaypoints(lane_points));
     }
 
-    for (size_t lane_idx = 0; lane_idx < lane_point_sequences.size(); ++lane_idx) {
-        addLaneFromPoints(lane_point_sequences[lane_idx]);
-    }
+    setLanes(lanes);
 }
 
 // =============================================================================
@@ -137,36 +209,20 @@ TrackMainRoad::TrackMainRoad(
 // =============================================================================
 
 void TrackMainRoad::setLanes(const std::vector<std::vector<math::Pose2d>>& lanes) {
-    if (lanes.empty()) {
-        throw std::invalid_argument(
-            "TrackMainRoad requires at least one lane.");
-    }
-    for (size_t lane_idx = 0; lane_idx < lanes.size(); ++lane_idx) {
-        validateLaneWaypoints(lanes[lane_idx]);
-    }
+    validateLaneConfiguration(lanes);
     lanes_ = lanes;
 }
 
 void TrackMainRoad::addLaneFromPoints(const std::vector<geometry::Point2d>& points) {
-    validateLanePoints(points);
-
-    std::vector<math::Pose2d> lane_waypoints;
-    lane_waypoints.reserve(points.size());
-
-    for (size_t i = 0; i < points.size(); ++i) {
-        double yaw = 0.0;
-        if (i < points.size() - 1) {
-            yaw = std::atan2(points[i + 1].y() - points[i].y(),
-                             points[i + 1].x() - points[i].x());
-        } else {
-            yaw = std::atan2(points[i].y() - points[i - 1].y(),
-                             points[i].x() - points[i - 1].x());
-        }
-        lane_waypoints.emplace_back(points[i].x(), points[i].y(),
-                                    math::Angle::from_radians(yaw));
+    if (lanes_.size() >= 2) {
+        throw std::invalid_argument("TrackMainRoad cannot contain more than 2 lanes.");
     }
 
-    lanes_.push_back(std::move(lane_waypoints));
+    validateLanePoints(points);
+    lanes_.push_back(makeLaneWaypoints(points));
+    if (lanes_.size() == 2) {
+        validateLaneConfiguration(lanes_);
+    }
 }
 
 } // namespace zones

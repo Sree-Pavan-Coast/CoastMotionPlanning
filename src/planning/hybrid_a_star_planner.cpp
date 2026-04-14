@@ -1,5 +1,6 @@
 #include "coastmotionplanning/planning/hybrid_a_star_planner.hpp"
 
+#include <array>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -114,6 +115,25 @@ struct OpenEntry {
     }
 };
 
+struct AnalyticPathValidationResult {
+    bool valid{false};
+    std::vector<common::MotionDirection> segment_directions;
+};
+
+bool canChangeMotionDirection(const SearchNode& node,
+                              common::MotionDirection successor_motion);
+double computeNextSameMotionLength(const SearchNode& parent,
+                                   common::MotionDirection successor_motion,
+                                   double travel_m,
+                                   double global_max_same_motion_length_m);
+double computeNextSameMotionRemainingToChange(
+    const SearchNode& parent,
+    const PlannerBehaviorProfile& current_profile,
+    const PlannerBehaviorProfile& successor_profile,
+    common::MotionDirection successor_motion,
+    double travel_m);
+bool isTerminalMotionSegmentValid(const SearchNode& node);
+
 double normalizeAngleSigned(double angle) {
     angle = std::fmod(angle + common::PI, common::TWO_PI);
     if (angle < 0.0) {
@@ -222,6 +242,17 @@ double readLayerCost(const grid_map::GridMap& costmap,
     return static_cast<double>(value);
 }
 
+double readRawLayerValue(const grid_map::GridMap& costmap,
+                         const std::string& layer,
+                         const grid_map::Position& position) {
+    if (!costmap.exists(layer) || !costmap.isInside(position)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    return static_cast<double>(costmap.atPosition(
+        layer, position, grid_map::InterpolationMethods::INTER_NEAREST));
+}
+
 double computeHolonomicHeuristic(const grid_map::GridMap& costmap,
                                  const grid_map::Position& position) {
     if (!costmap.exists(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES) ||
@@ -263,6 +294,7 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
                        const PlannerBehaviorProfile& profile,
                        const SearchNode& parent,
                        const grid_map::Position& successor_position,
+                       double successor_yaw_rad,
                        TurnDirection turn_direction,
                        double travel_m) {
     double edge_cost = travel_m;
@@ -294,9 +326,21 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
     }
 
     if (profile.isLayerActive(costs::CostmapLayerNames::LANE_CENTERLINE_COST)) {
-        edge_cost += travel_m * (readLayerCost(costmap,
-                                               costs::CostmapLayerNames::LANE_CENTERLINE_COST,
-                                               successor_position) / CostValues::LETHAL);
+        edge_cost += travel_m * profile.planner.weight_lane_centerline *
+            (readLayerCost(costmap,
+                           costs::CostmapLayerNames::LANE_CENTERLINE_COST,
+                           successor_position) / CostValues::LETHAL);
+    }
+
+    if (profile.planner.lane_heading_bias_weight > 0.0) {
+        const double lane_heading = readRawLayerValue(
+            costmap, costs::CostmapLayerNames::LANE_HEADING, successor_position);
+        if (std::isfinite(lane_heading)) {
+            const double heading_error =
+                std::abs(normalizeAngleSigned(successor_yaw_rad - lane_heading));
+            edge_cost +=
+                travel_m * profile.planner.lane_heading_bias_weight * heading_error;
+        }
     }
 
     return edge_cost;
@@ -359,6 +403,98 @@ bool allowsReverseMotion(const PlannerBehaviorProfile& profile,
 bool allowsReverseMotion(const ResolvedPlannerBehavior& resolved_behavior) {
     return resolved_behavior.profile != nullptr &&
            allowsReverseMotion(*resolved_behavior.profile, resolved_behavior.zone);
+}
+
+common::MotionDirection inferAnalyticMotionDirection(
+    const std::array<double, 3>& from,
+    const std::array<double, 3>& to,
+    common::MotionDirection fallback_direction) {
+    const double dx = to[0] - from[0];
+    const double dy = to[1] - from[1];
+    const double distance = std::hypot(dx, dy);
+    if (distance <= MOTION_EPSILON) {
+        return fallback_direction;
+    }
+
+    const double start_projection = dx * std::cos(from[2]) + dy * std::sin(from[2]);
+    const double end_projection = dx * std::cos(to[2]) + dy * std::sin(to[2]);
+    const double mean_projection = 0.5 * (start_projection + end_projection);
+    const double projection_threshold = std::max(MOTION_EPSILON, distance * 1e-3);
+    if (mean_projection > projection_threshold) {
+        return common::MotionDirection::Forward;
+    }
+    if (mean_projection < -projection_threshold) {
+        return common::MotionDirection::Reverse;
+    }
+    return fallback_direction;
+}
+
+AnalyticPathValidationResult validateAnalyticPathSegments(
+    const SearchNode& start_node,
+    const std::vector<std::array<double, 3>>& waypoints,
+    const std::vector<ResolvedPlannerBehavior>& waypoint_resolutions,
+    double global_max_same_motion_length_m) {
+    AnalyticPathValidationResult result;
+    if (waypoints.size() < 2 || waypoints.size() != waypoint_resolutions.size()) {
+        return result;
+    }
+
+    SearchNode simulated_node = start_node;
+    common::MotionDirection fallback_direction = simulated_node.has_inbound_motion
+        ? simulated_node.inbound_motion
+        : common::MotionDirection::Forward;
+    result.segment_directions.reserve(waypoints.size() - 1);
+
+    for (size_t i = 1; i < waypoints.size(); ++i) {
+        const auto& from = waypoints[i - 1];
+        const auto& to = waypoints[i];
+        const ResolvedPlannerBehavior& current_resolution = waypoint_resolutions[i - 1];
+        const ResolvedPlannerBehavior& successor_resolution = waypoint_resolutions[i];
+        if (current_resolution.profile == nullptr || successor_resolution.profile == nullptr) {
+            return AnalyticPathValidationResult{};
+        }
+
+        const double travel_m = std::hypot(to[0] - from[0], to[1] - from[1]);
+        const common::MotionDirection step_motion = inferAnalyticMotionDirection(
+            from, to, fallback_direction);
+
+        if (step_motion == common::MotionDirection::Reverse &&
+            !allowsReverseMotion(*successor_resolution.profile, successor_resolution.zone)) {
+            return AnalyticPathValidationResult{};
+        }
+
+        if (!canChangeMotionDirection(simulated_node, step_motion)) {
+            return AnalyticPathValidationResult{};
+        }
+
+        simulated_node.same_motion_length_m = computeNextSameMotionLength(
+            simulated_node,
+            step_motion,
+            travel_m,
+            global_max_same_motion_length_m);
+        simulated_node.same_motion_remaining_to_change_m =
+            computeNextSameMotionRemainingToChange(
+                simulated_node,
+                *current_resolution.profile,
+                *successor_resolution.profile,
+                step_motion,
+                travel_m);
+        simulated_node.has_inbound_motion = true;
+        simulated_node.inbound_motion = step_motion;
+        simulated_node.zone = successor_resolution.zone;
+        simulated_node.behavior_name = successor_resolution.behavior_name;
+        simulated_node.pose = math::Pose2d(
+            to[0], to[1], math::Angle::from_radians(to[2]));
+
+        fallback_direction = step_motion;
+        result.segment_directions.push_back(step_motion);
+    }
+
+    result.valid = isTerminalMotionSegmentValid(simulated_node);
+    if (!result.valid) {
+        result.segment_directions.clear();
+    }
+    return result;
 }
 
 bool isGoalSatisfied(const SearchNode& node,
@@ -573,22 +709,13 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             return empty;
         }
 
-        // Enforce min_path_len_in_same_motion: the terminal forward segment
-        // must be long enough for the robot to stop.
-        const double effective_terminal_length =
-            (node.has_inbound_motion &&
-             node.inbound_motion == common::MotionDirection::Forward)
-            ? node.same_motion_length_m + path_length
-            : path_length;
-        if (effective_terminal_length <
-            node_profile.planner.min_path_len_in_same_motion - MOTION_EPSILON) {
-            return empty;
-        }
-
         // Check all waypoints for collision and resolve behaviors
-        std::vector<std::string> wp_behaviors;
-        wp_behaviors.reserve(waypoints.size());
-        for (const auto& wp : waypoints) {
+        std::vector<ResolvedPlannerBehavior> wp_resolutions;
+        wp_resolutions.reserve(waypoints.size());
+        wp_resolutions.push_back(ResolvedPlannerBehavior{
+            node.zone, node.behavior_name, &node_profile, false});
+        for (size_t i = 1; i < waypoints.size(); ++i) {
+            const auto& wp = waypoints[i];
             robot::RobotState rs;
             rs.x = wp[0];
             rs.y = wp[1];
@@ -609,10 +736,21 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
                 wp_pose, costmap, node.zone, node.behavior_name,
                 selection.selected_zones, behavior_set_);
-            wp_behaviors.push_back(
+            wp_resolutions.push_back(
                 resolved.profile != nullptr
-                    ? resolved.behavior_name
-                    : node.behavior_name);
+                    ? resolved
+                    : ResolvedPlannerBehavior{
+                          node.zone, node.behavior_name, &node_profile, false});
+        }
+
+        const AnalyticPathValidationResult analytic_validation =
+            validateAnalyticPathSegments(
+                node,
+                waypoints,
+                wp_resolutions,
+                global_max_same_motion_length_m);
+        if (!analytic_validation.valid) {
+            return empty;
         }
 
         // Build the result: search path to current node + analytic path to goal
@@ -646,8 +784,8 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             wp_pose.y = waypoints[i][1];
             wp_pose.theta = math::Angle::from_radians(waypoints[i][2]);
             prefix_poses.push_back(wp_pose);
-            prefix_behaviors.push_back(wp_behaviors[i]);
-            prefix_directions.push_back(common::MotionDirection::Forward);
+            prefix_behaviors.push_back(wp_resolutions[i].behavior_name);
+            prefix_directions.push_back(analytic_validation.segment_directions[i - 1]);
         }
 
         result.poses = std::move(prefix_poses);
@@ -688,24 +826,63 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             return reconstructResult(nodes, static_cast<int>(entry.node_index));
         }
 
+        const PlannerBehaviorProfile& current_profile =
+            behavior_set_.get(current_node.behavior_name);
+
         // Analytic expansion: periodically try a direct curve to the goal
         ++expansion_count;
-        if (expansion_count % analytic_expansion_interval == 0) {
+        const double dx_to_goal = request.goal.x - current_node.pose.x;
+        const double dy_to_goal = request.goal.y - current_node.pose.y;
+        const double distance_to_goal = std::hypot(dx_to_goal, dy_to_goal);
+        const bool periodic_analytic_shot =
+            current_profile.planner.analytic_shot &&
+            expansion_count % analytic_expansion_interval == 0;
+        const bool near_goal_analytic_shot =
+            current_profile.planner.near_goal_analytic_expansion &&
+            current_profile.planner.near_goal_analytic_radius_m > 0.0 &&
+            distance_to_goal <= current_profile.planner.near_goal_analytic_radius_m;
+        if (periodic_analytic_shot || near_goal_analytic_shot) {
             auto analytic_result = tryAnalyticExpansion(current_node, entry.node_index);
             if (analytic_result.success) {
                 return analytic_result;
             }
         }
 
-        const PlannerBehaviorProfile& current_profile =
-            behavior_set_.get(current_node.behavior_name);
-
         const auto projections = motion_table.getProjections(
             static_cast<float>(current_node.pose.x / xy_resolution_m),
             static_cast<float>(current_node.pose.y / xy_resolution_m),
             current_node.heading_bin);
 
-        for (size_t primitive_idx = 0; primitive_idx < projections.size(); ++primitive_idx) {
+        bool lane_following_node = false;
+        size_t forward_primitive_idx = projections.size();
+        if (current_profile.planner.lane_primitive_suppression) {
+            const grid_map::Position current_position(current_node.pose.x, current_node.pose.y);
+            const double current_lane_distance = readRawLayerValue(
+                costmap, costs::CostmapLayerNames::LANE_DISTANCE, current_position);
+            const double current_lane_heading = readRawLayerValue(
+                costmap, costs::CostmapLayerNames::LANE_HEADING, current_position);
+            if (std::isfinite(current_lane_distance) &&
+                std::isfinite(current_lane_heading) &&
+                current_lane_distance < current_profile.planner.step_size_m) {
+                const double heading_error = std::abs(normalizeAngleSigned(
+                    current_node.pose.theta.radians() - current_lane_heading));
+                if (heading_error < (2.0 * yaw_bin_size_rad)) {
+                    const auto forward_it = std::find_if(
+                        projections.begin(),
+                        projections.end(),
+                        [](const auto& projection) {
+                            return projection.turn_dir == TurnDirection::FORWARD;
+                        });
+                    if (forward_it != projections.end()) {
+                        lane_following_node = true;
+                        forward_primitive_idx = static_cast<size_t>(
+                            std::distance(projections.begin(), forward_it));
+                    }
+                }
+            }
+        }
+
+        const auto tryExpandPrimitive = [&](size_t primitive_idx) -> bool {
             const auto& projection = projections[primitive_idx];
             const unsigned int successor_heading_bin =
                 static_cast<unsigned int>(std::lround(projection.theta)) %
@@ -719,7 +896,16 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
 
             const grid_map::Position successor_position(successor_pose.x, successor_pose.y);
             if (!costmap.isInside(successor_position)) {
-                continue;
+                return false;
+            }
+
+            if (current_profile.planner.max_cross_track_error_m > 0.0) {
+                const double lane_distance = readRawLayerValue(
+                    costmap, costs::CostmapLayerNames::LANE_DISTANCE, successor_position);
+                if (std::isfinite(lane_distance) &&
+                    lane_distance > current_profile.planner.max_cross_track_error_m) {
+                    return false;
+                }
             }
 
             const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
@@ -731,7 +917,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 behavior_set_);
             if (resolved.profile == nullptr ||
                 !isPrimitiveAllowed(projection.turn_dir, resolved)) {
-                continue;
+                return false;
             }
 
             const float successor_lethal_threshold = static_cast<float>(
@@ -742,12 +928,12 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 CollisionChecker adjusted_checker(adjusted_config);
                 if (adjusted_checker.checkCollision(
                         costmap, car_, makeRobotState(successor_pose)).in_collision) {
-                    continue;
+                    return false;
                 }
             } else {
                 if (collision_checker.checkCollision(
                         costmap, car_, makeRobotState(successor_pose)).in_collision) {
-                    continue;
+                    return false;
                 }
             }
 
@@ -757,13 +943,14 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             const common::MotionDirection successor_motion =
                 motionDirectionForPrimitive(projection.turn_dir);
             if (!canChangeMotionDirection(current_node, successor_motion)) {
-                continue;
+                return false;
             }
             const double edge_cost = computeEdgeCost(
                 costmap,
                 *resolved.profile,
                 current_node,
                 successor_position,
+                successor_pose.theta.radians(),
                 projection.turn_dir,
                 travel_m);
             const double new_g = current_node.g + edge_cost;
@@ -814,7 +1001,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 global_max_same_motion_length_m);
             const auto existing = best_g_by_key.find(successor_key);
             if (existing != best_g_by_key.end() && new_g >= existing->second - 1e-6) {
-                continue;
+                return false;
             }
 
             const size_t successor_index = nodes.size();
@@ -826,10 +1013,22 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 insertion_order++,
                 successor_index
             });
+            return true;
+        };
+
+        if (lane_following_node &&
+            forward_primitive_idx < projections.size() &&
+            tryExpandPrimitive(forward_primitive_idx)) {
+            continue;
+        }
+
+        for (size_t primitive_idx = 0; primitive_idx < projections.size(); ++primitive_idx) {
+            tryExpandPrimitive(primitive_idx);
         }
     }
 
     failure_result.detail = "Hybrid A* exhausted the search space without finding a path.";
+    return failure_result;
 }
 
 HeuristicModel HybridAStarPlanner::selectHeuristicModel(

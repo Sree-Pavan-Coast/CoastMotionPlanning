@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <chrono>
+#include <cmath>
 
 #include <grid_map_core/grid_map_core.hpp>
 #include "coastmotionplanning/costs/costmap_builder.hpp"
@@ -38,7 +39,7 @@ protected:
             geometry::Point2d(20, 1.5), geometry::Point2d(40, 1.5)
         };
         std::vector<geometry::Point2d> lane_b = {
-            geometry::Point2d(20, 3.5), geometry::Point2d(40, 3.5)
+            geometry::Point2d(40, 3.5), geometry::Point2d(20, 3.5)
         };
         track->addLaneFromPoints(lane_a);
         track->addLaneFromPoints(lane_b);
@@ -68,6 +69,8 @@ TEST_F(CostmapBuilderTest, BuildSameZone) {
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::INFLATION));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::ZONE_CONSTRAINTS));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::LANE_CENTERLINE_COST));
+    EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::LANE_HEADING));
+    EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::LANE_DISTANCE));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::COMBINED_COST));
 }
@@ -157,6 +160,36 @@ TEST_F(CostmapBuilderTest, GapBetweenZonesBecomesDrivableTransitionSpace) {
     EXPECT_FLOAT_EQ(zone_value, costs::ZoneConstraintValues::ZONE_TRANSITION);
     EXPECT_FLOAT_EQ(static_cost, costs::CostValues::FREE_SPACE);
     EXPECT_LT(combined_cost, costs::CostValues::LETHAL);
+}
+
+TEST_F(CostmapBuilderTest, LaneMetadataLayersEncodeDirectionalHeadingAndDistance) {
+    costs::CostmapBuilder builder(config, all_zones, *car);
+
+    math::Pose2d start(0.0, 0.0, math::Angle::from_radians(0.0));
+    math::Pose2d goal(50.0, 2.5, math::Angle::from_radians(0.0));
+
+    auto costmap = builder.build(start, goal);
+
+    const grid_map::Position lower_lane_pos(30.0, 1.5);
+    const grid_map::Position upper_lane_pos(30.0, 3.5);
+    const grid_map::Position maneuver_pos(0.0, 0.0);
+
+    const float lower_heading =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_HEADING, lower_lane_pos);
+    const float upper_heading =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_HEADING, upper_lane_pos);
+    const float lower_distance =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, lower_lane_pos);
+    const float maneuver_heading =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_HEADING, maneuver_pos);
+    const float maneuver_distance =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, maneuver_pos);
+
+    EXPECT_NEAR(lower_heading, 0.0f, 1e-3f);
+    EXPECT_NEAR(std::abs(upper_heading), 3.14159265f, 1e-3f);
+    EXPECT_LE(lower_distance, 0.051f);
+    EXPECT_TRUE(std::isnan(maneuver_heading));
+    EXPECT_TRUE(std::isinf(maneuver_distance));
 }
 
 TEST_F(CostmapBuilderTest, PerformanceBudget) {

@@ -22,6 +22,13 @@ struct PlannerBehaviorPlannerConfig {
     double analytic_expansion_max_length_m{0.0};
     double analytic_expansion_ratio{0.0};
     double min_path_len_in_same_motion{0.0};
+    bool analytic_shot{true};
+    bool near_goal_analytic_expansion{false};
+    double near_goal_analytic_radius_m{0.0};
+    double weight_lane_centerline{1.0};
+    double lane_heading_bias_weight{0.0};
+    double max_cross_track_error_m{0.0};
+    bool lane_primitive_suppression{false};
 };
 
 struct PlannerBehaviorCostmapConfig {

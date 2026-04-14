@@ -34,8 +34,11 @@ zones:
       - [0.0, 4.0]
     lanes:
       - lane_waypoints:
-          - [1.0, 0.0]
-          - [11.0, 0.0]
+          - [1.0, -1.5]
+          - [11.0, -1.5]
+      - lane_waypoints:
+          - [11.0, 1.5]
+          - [1.0, 1.5]
 )";
 }
 
@@ -50,9 +53,9 @@ zones:
     coordinate_type: "world"
     polygon:
       - [0.0, 0.0]
-      - [12.0, 0.0]
-      - [12.0, 10.0]
-      - [0.0, 10.0]
+      - [6.0, 0.0]
+      - [6.0, 6.0]
+      - [0.0, 6.0]
 )";
 }
 
@@ -92,7 +95,7 @@ TEST(PlannerVisualizerServiceTest, LoadMapBuildsGeometryAndBounds) {
     EXPECT_GT(response.vehicle.max_steer_angle_rad, 0.0);
     ASSERT_EQ(response.zones.size(), 1u);
     EXPECT_EQ(response.zones[0].type, "TrackMainRoad");
-    ASSERT_EQ(response.zones[0].lanes.size(), 1u);
+    ASSERT_EQ(response.zones[0].lanes.size(), 2u);
     ASSERT_EQ(response.zones[0].lanes[0].poses.size(), 2u);
 }
 
@@ -156,8 +159,8 @@ TEST(PlannerVisualizerServiceTest, OppositeHeadingFailureIncludesTurningRadiusGu
     const auto result = service.plan(PlanRequest{
         map.map_id,
         "Pro_XD",
-        PoseDto{2.0, 5.0, 0.0},
-        PoseDto{6.0, 5.0, 180.0}
+        PoseDto{1.5, 3.0, 0.0},
+        PoseDto{4.5, 3.0, 180.0}
     });
 
     EXPECT_FALSE(result.success);

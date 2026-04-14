@@ -173,6 +173,19 @@ planning::PlannerBehaviorProfile PlannerBehaviorParser::parseProfile(
         planner["analytic_expansion_ratio"].as<double>();
     profile.planner.min_path_len_in_same_motion =
         planner["min_path_len_in_same_motion"].as<double>();
+    profile.planner.analytic_shot = planner["analytic_shot"].as<bool>();
+    profile.planner.near_goal_analytic_expansion =
+        planner["near_goal_analytic_expansion"].as<bool>();
+    profile.planner.near_goal_analytic_radius_m =
+        planner["near_goal_analytic_radius_m"].as<double>();
+    profile.planner.weight_lane_centerline =
+        planner["weight_lane_centerline"].as<double>();
+    profile.planner.lane_heading_bias_weight =
+        planner["lane_heading_bias_weight"].as<double>();
+    profile.planner.max_cross_track_error_m =
+        planner["max_cross_track_error_m"].as<double>();
+    profile.planner.lane_primitive_suppression =
+        planner["lane_primitive_suppression"].as<bool>();
 
     const YAML::Node costmap = profile_node["costmap"];
     profile.costmap.resolution_m = costmap["resolution_m"].as<double>();

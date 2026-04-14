@@ -67,6 +67,14 @@ std::shared_ptr<coastmotionplanning::zones::TrackMainRoad> makeTrackZone(
     const std::string& behavior = "") {
     auto zone = std::make_shared<coastmotionplanning::zones::TrackMainRoad>(
         makeRectangle(min_x, min_y, max_x, max_y), "track");
+    zone->addLaneFromPoints({
+        {min_x + 1.0, min_y + ((max_y - min_y) * 0.25)},
+        {max_x - 1.0, min_y + ((max_y - min_y) * 0.25)}
+    });
+    zone->addLaneFromPoints({
+        {max_x - 1.0, min_y + ((max_y - min_y) * 0.75)},
+        {min_x + 1.0, min_y + ((max_y - min_y) * 0.75)}
+    });
     if (!behavior.empty()) {
         zone->setPlannerBehavior(behavior);
     }
@@ -126,6 +134,8 @@ TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
     EXPECT_FALSE(primary.planner.only_forward_path);
     EXPECT_DOUBLE_EQ(primary.planner.weight_gear_change, 4.0);
     EXPECT_DOUBLE_EQ(primary.planner.min_path_len_in_same_motion, 1.0);
+    EXPECT_TRUE(primary.planner.analytic_shot);
+    EXPECT_DOUBLE_EQ(primary.planner.weight_lane_centerline, 1.0);
     EXPECT_DOUBLE_EQ(primary.costmap.resolution_m, 0.1);
     EXPECT_EQ(primary.motion_primitives.num_angle_bins, 72);
     EXPECT_EQ(primary.collision_checker.collision_mode, "strict");
@@ -140,6 +150,13 @@ TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
     EXPECT_EQ(parking.motion_primitives.num_angle_bins, 144);
     EXPECT_TRUE(parking.isLayerActive("inflation"));
     EXPECT_FALSE(parking.isLayerActive("lane_centerline_cost"));
+
+    const auto& track = behavior_set.get("track_main_road_profile");
+    EXPECT_FALSE(track.planner.analytic_shot);
+    EXPECT_DOUBLE_EQ(track.planner.weight_lane_centerline, 3.0);
+    EXPECT_DOUBLE_EQ(track.planner.lane_heading_bias_weight, 2.0);
+    EXPECT_TRUE(track.planner.lane_primitive_suppression);
+    EXPECT_TRUE(track.isLayerActive("lane_centerline_cost"));
 }
 
 TEST(PlannerBehaviorCatalogTest, MissingProfileLookupThrows) {

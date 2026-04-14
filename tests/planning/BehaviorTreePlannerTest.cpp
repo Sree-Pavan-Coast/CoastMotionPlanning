@@ -43,6 +43,14 @@ std::shared_ptr<coastmotionplanning::zones::TrackMainRoad> makeTrackZone(
     const std::string& behavior = "") {
     auto zone = std::make_shared<coastmotionplanning::zones::TrackMainRoad>(
         makeSquarePolygon(), "track");
+    zone->addLaneFromPoints({
+        {1.0, 2.5},
+        {9.0, 2.5}
+    });
+    zone->addLaneFromPoints({
+        {9.0, 7.5},
+        {1.0, 7.5}
+    });
     if (!behavior.empty()) {
         zone->setPlannerBehavior(behavior);
     }
@@ -69,7 +77,7 @@ TEST(PlannerBehaviorSetTest, LoadsNamedBehaviorsFromConfig) {
     EXPECT_FALSE(behavior_set.contains("missing_profile"));
 }
 
-TEST(BehaviorTreePlannerTest, GoalZoneHintWinsForNormalRequests) {
+TEST(BehaviorTreePlannerTest, StartZoneHintWinsForNormalRequests) {
     auto orchestrator = makeOrchestrator();
 
     PlanningRequestContext request;
@@ -81,19 +89,19 @@ TEST(BehaviorTreePlannerTest, GoalZoneHintWinsForNormalRequests) {
         request,
         [](const PlanningAttempt& attempt) {
             return PlannerRunResult{
-                attempt.profile == "primary_profile",
-                attempt.profile == "primary_profile" ? "planned" : "unexpected profile"
+                attempt.profile == "parking_profile",
+                attempt.profile == "parking_profile" ? "planned" : "unexpected profile"
             };
         });
 
     EXPECT_TRUE(result.success);
-    EXPECT_EQ(result.preferred_profile, "primary_profile");
-    EXPECT_EQ(result.selected_profile, "primary_profile");
+    EXPECT_EQ(result.preferred_profile, "parking_profile");
+    EXPECT_EQ(result.selected_profile, "parking_profile");
     ASSERT_EQ(result.attempted_profiles.size(), 1u);
-    EXPECT_EQ(result.attempted_profiles[0], "primary_profile");
+    EXPECT_EQ(result.attempted_profiles[0], "parking_profile");
 }
 
-TEST(BehaviorTreePlannerTest, TightManeuverRetriesWithRelaxedAfterParkingFailure) {
+TEST(BehaviorTreePlannerTest, TightManeuverUsesStartZoneBehaviorBeforeRetryingRelaxed) {
     auto orchestrator = makeOrchestrator();
 
     PlanningRequestContext request;
@@ -104,8 +112,8 @@ TEST(BehaviorTreePlannerTest, TightManeuverRetriesWithRelaxedAfterParkingFailure
     const BehaviorTreePlanResult result = orchestrator.run(
         request,
         [](const PlanningAttempt& attempt) {
-            if (attempt.profile == "parking_profile") {
-                return PlannerRunResult{false, "parking attempt failed"};
+            if (attempt.profile == "primary_profile") {
+                return PlannerRunResult{false, "primary attempt failed"};
             }
             if (attempt.profile == "relaxed_profile") {
                 return PlannerRunResult{true, "relaxed attempt succeeded"};
@@ -114,10 +122,10 @@ TEST(BehaviorTreePlannerTest, TightManeuverRetriesWithRelaxedAfterParkingFailure
         });
 
     EXPECT_TRUE(result.success);
-    EXPECT_EQ(result.preferred_profile, "parking_profile");
+    EXPECT_EQ(result.preferred_profile, "primary_profile");
     EXPECT_EQ(result.selected_profile, "relaxed_profile");
     ASSERT_EQ(result.attempted_profiles.size(), 2u);
-    EXPECT_EQ(result.attempted_profiles[0], "parking_profile");
+    EXPECT_EQ(result.attempted_profiles[0], "primary_profile");
     EXPECT_EQ(result.attempted_profiles[1], "relaxed_profile");
 }
 

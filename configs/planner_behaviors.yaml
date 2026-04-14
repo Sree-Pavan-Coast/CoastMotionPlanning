@@ -13,9 +13,8 @@
 #   holonomic_with_obstacles — 2D Dijkstra from goal (admissible heuristic)
 #   combined_cost            — Merged layer: max(static, zone_lethal) + inflation + lane
 #
-# Note: Each zone type also defines which layers it activates via getActiveLayers().
-#       The behavior's active_layers list acts as a global filter — only layers that
-#       appear in BOTH the behavior profile AND the zone's getActiveLayers() are built.
+# Note: The planner consults active_layers when applying cost terms.
+#       The builder still constructs its standard layers unconditionally.
 
 behaviors:
   # The strict, optimal primary planner profile
@@ -33,7 +32,14 @@ behaviors:
       weight_gear_change: 4.0
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
-      min_path_len_in_same_motion: 1.0
+      min_path_len_in_same_motion: 3.0
+      analytic_shot: true
+      near_goal_analytic_expansion: true
+      near_goal_analytic_radius_m: 3.0
+      weight_lane_centerline: 1.0
+      lane_heading_bias_weight: 0.0
+      max_cross_track_error_m: 0.0
+      lane_primitive_suppression: false
     costmap:
       resolution_m: 0.1
       inflation_radius_m: 0.3
@@ -63,7 +69,7 @@ behaviors:
   # The relaxed fallback profile — less strict boundaries, faster planning
   relaxed_profile:
     planner:
-      max_planning_time_ms: 2000
+      max_planning_time_ms: 3000
       xy_grid_resolution_m: 0.1
       yaw_grid_resolution_deg: 5.0
       step_size_m: 1.0
@@ -76,6 +82,13 @@ behaviors:
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
       min_path_len_in_same_motion: 1.0
+      analytic_shot: true
+      near_goal_analytic_expansion: false
+      near_goal_analytic_radius_m: 0.0
+      weight_lane_centerline: 1.0
+      lane_heading_bias_weight: 0.0
+      max_cross_track_error_m: 0.0
+      lane_primitive_suppression: false
     costmap:
       resolution_m: 0.1
       inflation_radius_m: 0.0
@@ -116,6 +129,13 @@ behaviors:
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
       min_path_len_in_same_motion: 0.5
+      analytic_shot: true
+      near_goal_analytic_expansion: false
+      near_goal_analytic_radius_m: 0.0
+      weight_lane_centerline: 1.0
+      lane_heading_bias_weight: 0.0
+      max_cross_track_error_m: 0.0
+      lane_primitive_suppression: false
     costmap:
       resolution_m: 0.05
       inflation_radius_m: 0.3
@@ -148,7 +168,7 @@ behaviors:
       xy_grid_resolution_m: 0.1
       yaw_grid_resolution_deg: 5.0
       step_size_m: 1.0
-      only_forward_path: false
+      only_forward_path: true
       weight_forward: 1.0
       weight_reverse: 2.0
       weight_steer: 0.1
@@ -157,6 +177,13 @@ behaviors:
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
       min_path_len_in_same_motion: 0.5
+      analytic_shot: false
+      near_goal_analytic_expansion: true
+      near_goal_analytic_radius_m: 5.0
+      weight_lane_centerline: 3.0
+      lane_heading_bias_weight: 2.0
+      max_cross_track_error_m: 0.0
+      lane_primitive_suppression: true
     costmap:
       resolution_m: 0.05
       inflation_radius_m: 0.3
@@ -179,5 +206,6 @@ behaviors:
       - static_obstacles
       - inflation
       - zone_constraints
+      - lane_centerline_cost
       - holonomic_with_obstacles
       - combined_cost

@@ -111,19 +111,20 @@ std::vector<std::shared_ptr<zones::Zone>> MapParser::parseDocument(
                 zone->setPlannerBehavior(planner_behavior);
                 zones_list.push_back(zone);
             } else if (type == "TrackMainRoad") {
-                auto track = std::make_shared<zones::TrackMainRoad>(polygon, name);
-                track->setPlannerBehavior(planner_behavior);
+                std::vector<std::vector<geometry::Point2d>> lane_point_sequences;
                 if (zone_node["lanes"]) {
                     for (const auto& lane_node : zone_node["lanes"]) {
-                        auto waypoints_points = parsePoints(
+                        lane_point_sequences.push_back(parsePoints(
                             lane_node["lane_waypoints"],
                             coordinate_type,
                             origin,
                             model_metric.value_or(1.0),
-                            "lane_waypoints for zone '" + zone_label + "'");
-                        track->addLaneFromPoints(waypoints_points);
+                            "lane_waypoints for zone '" + zone_label + "'"));
                     }
                 }
+                auto track = std::make_shared<zones::TrackMainRoad>(
+                    polygon, lane_point_sequences, name);
+                track->setPlannerBehavior(planner_behavior);
                 zones_list.push_back(track);
             } else {
                 // Fallback to ManeuveringZone if type is unknown or missing

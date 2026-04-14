@@ -54,8 +54,8 @@ protected:
                   << "          - [1.0, 2.0]\n"
                   << "          - [9.0, 2.0]\n"
                   << "      - lane_waypoints:\n"
-                  << "          - [1.0, 4.0]\n"
-                  << "          - [9.0, 4.0]\n";
+                  << "          - [9.0, 4.0]\n"
+                  << "          - [1.0, 4.0]\n";
         ofs_world.close();
 
         std::ofstream ofs_scaled("scaled_lat_lon_map.yaml");
@@ -123,6 +123,13 @@ protected:
                     << "      - [10.0, 0.0]\n"
                     << "      - [10.0, 5.0]\n"
                     << "      - [0.0, 5.0]\n"
+                    << "    lanes:\n"
+                    << "      - lane_waypoints:\n"
+                    << "          - [1.0, 1.5]\n"
+                    << "          - [9.0, 1.5]\n"
+                    << "      - lane_waypoints:\n"
+                    << "          - [9.0, 3.5]\n"
+                    << "          - [1.0, 3.5]\n"
                     << "  - name: \"implicit_default_maneuvering\"\n"
                     << "    type: \"ManeuveringZone\"\n"
                     << "    coordinate_type: \"world\"\n"
@@ -232,7 +239,7 @@ TEST_F(MapParserTest, ParsesMultipleLanesForTrackRoadZone) {
     ASSERT_EQ(track->getLanes()[1].size(), 2u);
     EXPECT_DOUBLE_EQ(track->getLanes()[0][0].x, 1.0);
     EXPECT_DOUBLE_EQ(track->getLanes()[0][0].y, 2.0);
-    EXPECT_DOUBLE_EQ(track->getLanes()[1][0].x, 1.0);
+    EXPECT_DOUBLE_EQ(track->getLanes()[1][0].x, 9.0);
     EXPECT_DOUBLE_EQ(track->getLanes()[1][0].y, 4.0);
 }
 
@@ -298,6 +305,9 @@ zones:
       - lane_waypoints:
           - [1.0, 0.0]
           - [7.0, 0.0]
+      - lane_waypoints:
+          - [7.0, 1.0]
+          - [1.0, 1.0]
 )";
 
     const auto zones = MapParser::parseFromString(yaml, "inline-map");
@@ -306,8 +316,83 @@ zones:
     const auto track = std::dynamic_pointer_cast<coastmotionplanning::zones::TrackMainRoad>(zones[0]);
     ASSERT_NE(track, nullptr);
     EXPECT_TRUE(track->getResolvedPlannerBehavior().empty());
-    ASSERT_EQ(track->getLanes().size(), 1u);
+    ASSERT_EQ(track->getLanes().size(), 2u);
     ASSERT_EQ(track->getLanes()[0].size(), 2u);
     EXPECT_DOUBLE_EQ(track->getLanes()[0][0].x, 1.0);
     EXPECT_DOUBLE_EQ(track->getLanes()[0][0].y, 0.0);
+}
+
+TEST_F(MapParserTest, RejectsTrackRoadWithSingleLane) {
+    const std::string yaml = R"(
+maps:
+  name: "Single Lane"
+zones:
+  - name: "track"
+    type: "TrackMainRoad"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, -2.0]
+      - [8.0, -2.0]
+      - [8.0, 2.0]
+      - [0.0, 2.0]
+    lanes:
+      - lane_waypoints:
+          - [1.0, -0.5]
+          - [7.0, -0.5]
+)";
+
+    EXPECT_THROW(MapParser::parseFromString(yaml, "single-lane-map"), std::invalid_argument);
+}
+
+TEST_F(MapParserTest, RejectsTrackRoadWithSameDirectionLanes) {
+    const std::string yaml = R"(
+maps:
+  name: "Same Direction"
+zones:
+  - name: "track"
+    type: "TrackMainRoad"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, -2.0]
+      - [8.0, -2.0]
+      - [8.0, 2.0]
+      - [0.0, 2.0]
+    lanes:
+      - lane_waypoints:
+          - [1.0, -0.5]
+          - [7.0, -0.5]
+      - lane_waypoints:
+          - [1.0, 0.5]
+          - [7.0, 0.5]
+)";
+
+    EXPECT_THROW(MapParser::parseFromString(yaml, "same-direction-map"), std::invalid_argument);
+}
+
+TEST(TrackMainRoadValidationTest, RejectsThirdLaneDuringIncrementalConstruction) {
+    coastmotionplanning::geometry::Polygon2d polygon;
+    polygon.outer() = {
+        coastmotionplanning::geometry::Point2d(0.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 6.0),
+        coastmotionplanning::geometry::Point2d(0.0, 6.0),
+        coastmotionplanning::geometry::Point2d(0.0, 0.0)
+    };
+
+    coastmotionplanning::zones::TrackMainRoad track(polygon, "track");
+    track.addLaneFromPoints({
+        coastmotionplanning::geometry::Point2d(1.0, 1.5),
+        coastmotionplanning::geometry::Point2d(9.0, 1.5)
+    });
+    track.addLaneFromPoints({
+        coastmotionplanning::geometry::Point2d(9.0, 4.5),
+        coastmotionplanning::geometry::Point2d(1.0, 4.5)
+    });
+
+    EXPECT_THROW(
+        track.addLaneFromPoints({
+            coastmotionplanning::geometry::Point2d(1.0, 3.0),
+            coastmotionplanning::geometry::Point2d(9.0, 3.0)
+        }),
+        std::invalid_argument);
 }

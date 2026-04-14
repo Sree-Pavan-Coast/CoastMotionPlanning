@@ -2,6 +2,10 @@
 <root BTCPP_format="4" main_tree_to_execute="PlannerBehaviorTree">
   <BehaviorTree ID="ResolvePreferredProfile">
     <Fallback name="resolve_preferred_profile">
+      <Sequence name="start_zone_hint">
+        <HasStartAssignedBehavior />
+        <UseStartAssignedBehavior />
+      </Sequence>
       <Sequence name="tight_maneuver_prefers_parking">
         <IsTightManeuver />
         <SetPreferredProfile profile="parking_profile" />
@@ -9,10 +13,6 @@
       <Sequence name="goal_zone_hint">
         <HasGoalAssignedBehavior />
         <UseGoalAssignedBehavior />
-      </Sequence>
-      <Sequence name="start_zone_hint">
-        <HasStartAssignedBehavior />
-        <UseStartAssignedBehavior />
       </Sequence>
       <SetPreferredProfile profile="primary_profile" />
     </Fallback>

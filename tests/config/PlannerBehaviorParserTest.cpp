@@ -26,6 +26,13 @@ std::string masterYaml() {
         "  analytic_expansion_max_length_m: 20.0\n"
         "  analytic_expansion_ratio: 0.35\n"
         "  min_path_len_in_same_motion: 1.0\n"
+        "  analytic_shot: true\n"
+        "  near_goal_analytic_expansion: false\n"
+        "  near_goal_analytic_radius_m: 0.0\n"
+        "  weight_lane_centerline: 1.0\n"
+        "  lane_heading_bias_weight: 0.0\n"
+        "  max_cross_track_error_m: 0.0\n"
+        "  lane_primitive_suppression: false\n"
         "costmap:\n"
         "  resolution_m: 0.1\n"
         "  inflation_radius_m: 0.3\n"
@@ -64,6 +71,13 @@ std::string validBehaviorYaml() {
         "      analytic_expansion_max_length_m: 20.0\n"
         "      analytic_expansion_ratio: 0.35\n"
         "      min_path_len_in_same_motion: 1.0\n"
+        "      analytic_shot: true\n"
+        "      near_goal_analytic_expansion: false\n"
+        "      near_goal_analytic_radius_m: 0.0\n"
+        "      weight_lane_centerline: 1.0\n"
+        "      lane_heading_bias_weight: 0.0\n"
+        "      max_cross_track_error_m: 0.0\n"
+        "      lane_primitive_suppression: false\n"
         "    costmap:\n"
         "      resolution_m: 0.1\n"
         "      inflation_radius_m: 0.3\n"
@@ -103,6 +117,9 @@ std::string missingBehaviorYaml() {
         "      analytic_expansion_max_length_m: 20.0\n"
         "      analytic_expansion_ratio: 0.35\n"
         "      min_path_len_in_same_motion: 1.0\n"
+        "      analytic_shot: true\n"
+        "      near_goal_analytic_expansion: false\n"
+        "      near_goal_analytic_radius_m: 0.0\n"
         "    costmap:\n"
         "      resolution_m: 0.1\n"
         "      inflation_radius_m: 0.3\n"
@@ -143,6 +160,13 @@ std::string extraBehaviorYaml() {
         "      analytic_expansion_max_length_m: 20.0\n"
         "      analytic_expansion_ratio: 0.35\n"
         "      min_path_len_in_same_motion: 1.0\n"
+        "      analytic_shot: true\n"
+        "      near_goal_analytic_expansion: false\n"
+        "      near_goal_analytic_radius_m: 0.0\n"
+        "      weight_lane_centerline: 1.0\n"
+        "      lane_heading_bias_weight: 0.0\n"
+        "      max_cross_track_error_m: 0.0\n"
+        "      lane_primitive_suppression: false\n"
         "      unexpected_weight: 1.0\n"
         "    costmap:\n"
         "      resolution_m: 0.1\n"
@@ -208,6 +232,17 @@ TEST_F(PlannerBehaviorParserTest, ParsesProfilesThatMatchMasterSchema) {
     EXPECT_DOUBLE_EQ(
         profiles.at("primary_profile").planner.min_path_len_in_same_motion,
         1.0);
+    EXPECT_TRUE(profiles.at("primary_profile").planner.analytic_shot);
+    EXPECT_FALSE(
+        profiles.at("primary_profile").planner.near_goal_analytic_expansion);
+    EXPECT_DOUBLE_EQ(
+        profiles.at("primary_profile").planner.near_goal_analytic_radius_m,
+        0.0);
+    EXPECT_DOUBLE_EQ(
+        profiles.at("primary_profile").planner.weight_lane_centerline,
+        1.0);
+    EXPECT_FALSE(
+        profiles.at("primary_profile").planner.lane_primitive_suppression);
 }
 
 TEST_F(PlannerBehaviorParserTest, ThrowsWhenBehaviorOmitsMasterKey) {

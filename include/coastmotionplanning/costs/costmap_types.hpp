@@ -26,6 +26,8 @@ namespace CostmapLayerNames {
     constexpr const char* INFLATION                  = "inflation";
     constexpr const char* ZONE_CONSTRAINTS           = "zone_constraints";
     constexpr const char* LANE_CENTERLINE_COST       = "lane_centerline_cost";
+    constexpr const char* LANE_HEADING               = "lane_heading";
+    constexpr const char* LANE_DISTANCE              = "lane_distance";
     constexpr const char* HOLONOMIC_WITH_OBSTACLES   = "holonomic_with_obstacles";
     constexpr const char* COMBINED_COST              = "combined_cost";
 } // namespace CostmapLayerNames

@@ -35,6 +35,7 @@ const refs = {
   statusBarHintLabel: document.getElementById("statusBarHintLabel"),
   toggles: {
     grid: document.getElementById("showGridToggle"),
+    searchSpace: document.getElementById("showSearchSpaceToggle"),
     zones: document.getElementById("showZonesToggle"),
     lanes: document.getElementById("showLanesToggle"),
     start: document.getElementById("showStartToggle"),
@@ -58,6 +59,8 @@ const refs = {
 const colors = {
   grid: "rgba(255,255,255,0.05)",
   gridStrong: "rgba(255,255,255,0.16)",
+  searchSpaceFill: "rgba(120,220,160,0.07)",
+  searchSpaceStroke: "rgba(120,220,160,0.55)",
   trackFill: "rgba(74,169,255,0.14)",
   trackStroke: "rgba(102,185,255,0.55)",
   maneuverFill: "rgba(240,165,58,0.14)",
@@ -422,6 +425,20 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function renderSearchSpace() {
+  if (!state.map?.search_boundary?.length || !refs.toggles.searchSpace.checked) {
+    return "";
+  }
+
+  const points = state.map.search_boundary.map((point) => `${point.x},${-point.y}`).join(" ");
+  return `
+    <g class="search-space-layer">
+      <polygon points="${points}" fill="${colors.searchSpaceFill}" stroke="${colors.searchSpaceStroke}"
+        stroke-width="0.32" stroke-dasharray="1.2 0.6" vector-effect="non-scaling-stroke" />
+    </g>
+  `;
+}
+
 function renderZones() {
   if (!state.map || !refs.toggles.zones.checked) {
     return "";
@@ -560,6 +577,7 @@ function render() {
   mapLayers.innerHTML = [
     `<rect x="${state.viewBox.x}" y="${state.viewBox.y}" width="${state.viewBox.width}" height="${state.viewBox.height}" fill="rgba(255,255,255,0.01)" />`,
     renderGrid(),
+    renderSearchSpace(),
     renderZones(),
     renderLanes(),
     renderPath(),

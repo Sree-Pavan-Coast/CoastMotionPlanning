@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace coastmotionplanning {
@@ -50,11 +52,21 @@ public:
     float& at(HeuristicModel model, int x_idx, int y_idx, int theta_idx);
     float at(HeuristicModel model, int x_idx, int y_idx, int theta_idx) const;
 
+    /// Sample waypoints along the optimal Reeds-Shepp or Dubins path.
+    /// Returns {path_length, waypoints} where each waypoint is (x, y, yaw).
+    /// Returns empty waypoints if OMPL spaces are not configured.
+    std::pair<double, std::vector<std::array<double, 3>>> samplePath(
+        HeuristicModel model,
+        double from_x, double from_y, double from_yaw,
+        double to_x, double to_y, double to_yaw,
+        double step_size_m) const;
+
     float getMinTurningRadius() const { return header_.min_turning_radius; }
     uint32_t getNumAngleBins() const { return header_.num_angle_bins; }
     uint32_t getGridSize() const { return header_.grid_size; }
     float getCellSize() const { return header_.cell_size; }
     bool hasLookupTable() const { return table_loaded_; }
+    bool hasOmplSpaces() const { return ompl_spaces_ != nullptr; }
 
 private:
     struct OmplSpaces;

@@ -98,6 +98,11 @@ json mapLoadResponseToJson(const MapLoadResponse& response) {
         zones.push_back(zoneToJson(zone));
     }
 
+    json search_boundary = json::array();
+    for (const auto& point : response.search_boundary) {
+        search_boundary.push_back(json{{"x", point.x}, {"y", point.y}});
+    }
+
     return json{
         {"map_id", response.map_id},
         {"filename", response.filename},
@@ -109,7 +114,8 @@ json mapLoadResponseToJson(const MapLoadResponse& response) {
             {"max_y", response.bounds.max_y}
         }},
         {"vehicle", vehicleToJson(response.vehicle)},
-        {"zones", zones}
+        {"zones", zones},
+        {"search_boundary", search_boundary}
     };
 }
 

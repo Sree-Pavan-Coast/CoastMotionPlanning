@@ -140,3 +140,44 @@ behaviors:
       - zone_constraints
       - holonomic_with_obstacles
       - combined_cost
+
+  # profile for track main road
+  track_main_road_profile:
+    planner:
+      max_planning_time_ms: 2000
+      xy_grid_resolution_m: 0.1
+      yaw_grid_resolution_deg: 5.0
+      step_size_m: 1.0
+      only_forward_path: false
+      weight_forward: 1.0
+      weight_reverse: 2.0
+      weight_steer: 0.1
+      weight_steer_change: 0.5
+      weight_gear_change: 1.0
+      analytic_expansion_max_length_m: 20.0
+      analytic_expansion_ratio: 0.35
+      min_path_len_in_same_motion: 0.5
+    costmap:
+      resolution_m: 0.05
+      inflation_radius_m: 0.3
+      inscribed_radius_m: 1.0
+      cost_scaling_factor: 3.0
+      alpha_shape_alpha: 0.0
+      max_lane_cost: 100.0
+      max_lane_half_width_m: 5.0
+    collision_checker:
+      collision_mode: "strict"
+      lethal_threshold: 254.0
+      margin_m: 0.0
+    motion_primitives:
+      num_angle_bins: 144
+    non_holonomic_heuristic:
+      lut_grid_size: 400
+      lut_cell_size_m: 0.1
+      hitch_angle_penalty_factor: 2.0
+    active_layers:
+      - static_obstacles
+      - inflation
+      - zone_constraints
+      - holonomic_with_obstacles
+      - combined_cost

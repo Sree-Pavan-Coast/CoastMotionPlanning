@@ -14,12 +14,25 @@ public:
     TrackMainRoad() = default;
     ~TrackMainRoad() override = default;
 
-    TrackMainRoad(const geometry::Polygon2d& polygon, const std::optional<std::string>& name = std::nullopt);
+    /// Construct with polygon only.  Validates the polygon geometry.
+    TrackMainRoad(const geometry::Polygon2d& polygon,
+                  const std::optional<std::string>& name = std::nullopt);
+
+    /// Construct with polygon and lane point sequences.
+    /// Validates polygon geometry, requires at least one lane, validates every
+    /// lane has >= 2 waypoints, and all waypoints lie inside the polygon.
+    TrackMainRoad(const geometry::Polygon2d& polygon,
+                  const std::vector<std::vector<geometry::Point2d>>& lane_point_sequences,
+                  const std::optional<std::string>& name = std::nullopt);
 
     const std::vector<std::vector<math::Pose2d>>& getLanes() const { return lanes_; }
-    void setLanes(const std::vector<std::vector<math::Pose2d>>& lanes) { lanes_ = lanes; }
 
-    // Computes orientation between consecutive points and stores them as Pose2d
+    /// Replace all lanes.  Validates that lanes is non-empty, every lane has
+    /// >= 2 waypoints, and all waypoints lie inside the polygon.
+    void setLanes(const std::vector<std::vector<math::Pose2d>>& lanes);
+
+    /// Computes orientation between consecutive points and stores them as Pose2d.
+    /// Validates the lane has >= 2 points and all points lie inside the polygon.
     void addLaneFromPoints(const std::vector<geometry::Point2d>& points);
 
     std::string getDefaultPlannerBehavior() const override { return ""; }
@@ -40,6 +53,10 @@ public:
     bool isReverseAllowed() const override { return true; }
 
 private:
+    static void validatePolygon(const geometry::Polygon2d& polygon);
+    void validateLanePoints(const std::vector<geometry::Point2d>& points) const;
+    void validateLaneWaypoints(const std::vector<math::Pose2d>& waypoints) const;
+
     std::vector<std::vector<math::Pose2d>> lanes_;
 };
 

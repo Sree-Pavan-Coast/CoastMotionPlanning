@@ -87,6 +87,7 @@ struct MapLoadResponse {
     Bounds2d bounds;
     VehicleFootprintDto vehicle;
     std::vector<ZoneDto> zones;
+    std::vector<PointDto> search_boundary;  // Concave hull polygon of all zones
 };
 
 struct PlanRequest {

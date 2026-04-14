@@ -181,6 +181,28 @@ MapLoadResponse PlannerVisualizerService::loadMap(const MapLoadRequest& request)
         loaded_map->response.zones.push_back(buildZoneDto(zone));
     }
 
+    // Compute the concave hull (search space boundary) over all zone polygons
+    {
+        std::vector<geometry::Polygon2d> zone_polygons;
+        zone_polygons.reserve(zones.size());
+        for (const auto& zone : zones) {
+            zone_polygons.push_back(zone->getPolygon());
+        }
+        const auto hull = costs::ZoneSelector::computeConcaveHull(zone_polygons, 0.0);
+        const auto& ring = hull.outer();
+        loaded_map->response.search_boundary.reserve(ring.size());
+        for (size_t i = 0; i < ring.size(); ++i) {
+            // Skip the Boost.Geometry closing vertex (duplicate of first point)
+            if (i == ring.size() - 1 && ring.size() > 1 &&
+                std::abs(ring[i].x() - ring[0].x()) < 1e-9 &&
+                std::abs(ring[i].y() - ring[0].y()) < 1e-9) {
+                continue;
+            }
+            loaded_map->response.search_boundary.push_back(
+                PointDto{ring[i].x(), ring[i].y()});
+        }
+    }
+
     std::lock_guard<std::mutex> lock(maps_mutex_);
     maps_[loaded_map->response.map_id] = loaded_map;
     return loaded_map->response;

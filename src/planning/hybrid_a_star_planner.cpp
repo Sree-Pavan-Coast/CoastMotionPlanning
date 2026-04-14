@@ -495,6 +495,14 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     const auto deadline = Clock::now() + std::chrono::milliseconds(
         initial_profile.planner.max_planning_time_ms);
 
+    // Analytic expansion parameters
+    const double analytic_max_length = initial_profile.planner.analytic_expansion_max_length_m;
+    const double analytic_ratio = initial_profile.planner.analytic_expansion_ratio;
+    const unsigned int analytic_expansion_interval = std::max(
+        1u, static_cast<unsigned int>(
+            std::round(1.0 / std::max(analytic_ratio, 0.01))));
+    const double analytic_step_size = xy_resolution_m * 2.0;
+
     const double normalized_start_yaw = normalizeAngleUnsigned(request.start.theta.radians());
     const unsigned int start_heading_bin =
         motion_table.getClosestAngularBin(normalized_start_yaw);
@@ -514,12 +522,14 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     start_node.behavior_name = request.initial_behavior_name;
 
     std::vector<SearchNode> nodes;
+    nodes.reserve(50000);
     nodes.push_back(start_node);
 
     std::priority_queue<OpenEntry, std::vector<OpenEntry>, std::greater<OpenEntry>> open_queue;
     open_queue.push(OpenEntry{start_node.g + start_node.h, start_node.h, 0, 0});
 
     std::unordered_map<DiscreteStateKey, double, DiscreteStateKeyHash> best_g_by_key;
+    best_g_by_key.reserve(50000);
     best_g_by_key.emplace(
         discretizeState(
             request.start,
@@ -530,6 +540,122 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         0.0);
 
     uint64_t insertion_order = 1;
+    uint64_t expansion_count = 0;
+
+    // Lambda: attempt analytic expansion from a node to the goal.
+    // Returns a result with success=true if a collision-free path is found.
+    auto tryAnalyticExpansion = [&](const SearchNode& node,
+                                   size_t node_index) -> HybridAStarPlannerResult {
+        HybridAStarPlannerResult empty;
+        if (!heuristic.hasOmplSpaces()) {
+            return empty;
+        }
+
+        // Don't expand if the node hasn't satisfied its minimum same-motion run
+        if (node.same_motion_remaining_to_change_m > MOTION_EPSILON) {
+            return empty;
+        }
+
+        const PlannerBehaviorProfile& node_profile =
+            behavior_set_.get(node.behavior_name);
+        const HeuristicModel model =
+            allowsReverseMotion(node_profile, node.zone)
+            ? HeuristicModel::REEDS_SHEPP
+            : HeuristicModel::DUBINS;
+
+        auto [path_length, waypoints] = heuristic.samplePath(
+            model,
+            node.pose.x, node.pose.y, node.pose.theta.radians(),
+            request.goal.x, request.goal.y, request.goal.theta.radians(),
+            analytic_step_size);
+
+        if (waypoints.empty() || path_length > analytic_max_length) {
+            return empty;
+        }
+
+        // Enforce min_path_len_in_same_motion: the terminal forward segment
+        // must be long enough for the robot to stop.
+        const double effective_terminal_length =
+            (node.has_inbound_motion &&
+             node.inbound_motion == common::MotionDirection::Forward)
+            ? node.same_motion_length_m + path_length
+            : path_length;
+        if (effective_terminal_length <
+            node_profile.planner.min_path_len_in_same_motion - MOTION_EPSILON) {
+            return empty;
+        }
+
+        // Check all waypoints for collision and resolve behaviors
+        std::vector<std::string> wp_behaviors;
+        wp_behaviors.reserve(waypoints.size());
+        for (const auto& wp : waypoints) {
+            robot::RobotState rs;
+            rs.x = wp[0];
+            rs.y = wp[1];
+            rs.yaw = wp[2];
+
+            const grid_map::Position wp_pos(rs.x, rs.y);
+            if (!costmap.isInside(wp_pos)) {
+                return empty;
+            }
+
+            if (collision_checker.checkCollision(costmap, car_, rs).in_collision) {
+                return empty;
+            }
+
+            // Resolve zone/behavior for this waypoint
+            math::Pose2d wp_pose(wp[0], wp[1],
+                                 math::Angle::from_radians(wp[2]));
+            const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
+                wp_pose, costmap, node.zone, node.behavior_name,
+                selection.selected_zones, behavior_set_);
+            wp_behaviors.push_back(
+                resolved.profile != nullptr
+                    ? resolved.behavior_name
+                    : node.behavior_name);
+        }
+
+        // Build the result: search path to current node + analytic path to goal
+        HybridAStarPlannerResult result;
+        result.success = true;
+
+        // Backtrack from current node to start
+        std::vector<math::Pose2d> prefix_poses;
+        std::vector<std::string> prefix_behaviors;
+        std::vector<common::MotionDirection> prefix_directions;
+
+        int idx = static_cast<int>(node_index);
+        while (idx >= 0) {
+            const SearchNode& n = nodes[static_cast<size_t>(idx)];
+            prefix_poses.push_back(n.pose);
+            prefix_behaviors.push_back(n.behavior_name);
+            if (n.parent_index >= 0) {
+                prefix_directions.push_back(n.inbound_motion);
+            }
+            idx = n.parent_index;
+        }
+
+        std::reverse(prefix_poses.begin(), prefix_poses.end());
+        std::reverse(prefix_behaviors.begin(), prefix_behaviors.end());
+        std::reverse(prefix_directions.begin(), prefix_directions.end());
+
+        // Append analytic expansion waypoints (skip first, it's the current node)
+        for (size_t i = 1; i < waypoints.size(); ++i) {
+            math::Pose2d wp_pose;
+            wp_pose.x = waypoints[i][0];
+            wp_pose.y = waypoints[i][1];
+            wp_pose.theta = math::Angle::from_radians(waypoints[i][2]);
+            prefix_poses.push_back(wp_pose);
+            prefix_behaviors.push_back(wp_behaviors[i]);
+            prefix_directions.push_back(common::MotionDirection::Forward);
+        }
+
+        result.poses = std::move(prefix_poses);
+        result.behavior_sequence = std::move(prefix_behaviors);
+        result.segment_directions = std::move(prefix_directions);
+        result.detail = "Path found (analytic expansion).";
+        return result;
+    };
 
     while (!open_queue.empty()) {
         if (Clock::now() >= deadline) {
@@ -540,6 +666,8 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         const OpenEntry entry = open_queue.top();
         open_queue.pop();
 
+        // Copy, not reference: nodes.push_back() in the inner loop can
+        // trigger reallocation which would invalidate a reference.
         const SearchNode current_node = nodes[entry.node_index];
         const DiscreteStateKey current_key = discretizeState(
             current_node.pose,
@@ -558,6 +686,15 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                             yaw_bin_size_rad) &&
             isTerminalMotionSegmentValid(current_node)) {
             return reconstructResult(nodes, static_cast<int>(entry.node_index));
+        }
+
+        // Analytic expansion: periodically try a direct curve to the goal
+        ++expansion_count;
+        if (expansion_count % analytic_expansion_interval == 0) {
+            auto analytic_result = tryAnalyticExpansion(current_node, entry.node_index);
+            if (analytic_result.success) {
+                return analytic_result;
+            }
         }
 
         const PlannerBehaviorProfile& current_profile =
@@ -597,13 +734,21 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 continue;
             }
 
-            CollisionCheckerConfig successor_collision_config = collision_config;
-            successor_collision_config.lethal_threshold = static_cast<float>(
+            const float successor_lethal_threshold = static_cast<float>(
                 resolved.profile->collision_checker.lethal_threshold);
-            CollisionChecker successor_collision_checker(successor_collision_config);
-            if (successor_collision_checker.checkCollision(
-                    costmap, car_, makeRobotState(successor_pose)).in_collision) {
-                continue;
+            if (std::abs(successor_lethal_threshold - collision_config.lethal_threshold) > 0.5f) {
+                CollisionCheckerConfig adjusted_config = collision_config;
+                adjusted_config.lethal_threshold = successor_lethal_threshold;
+                CollisionChecker adjusted_checker(adjusted_config);
+                if (adjusted_checker.checkCollision(
+                        costmap, car_, makeRobotState(successor_pose)).in_collision) {
+                    continue;
+                }
+            } else {
+                if (collision_checker.checkCollision(
+                        costmap, car_, makeRobotState(successor_pose)).in_collision) {
+                    continue;
+                }
             }
 
             const double travel_m =
@@ -685,7 +830,6 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     }
 
     failure_result.detail = "Hybrid A* exhausted the search space without finding a path.";
-    return failure_result;
 }
 
 HeuristicModel HybridAStarPlanner::selectHeuristicModel(

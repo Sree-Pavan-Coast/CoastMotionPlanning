@@ -121,12 +121,16 @@ protected:
                     << "    polygon:\n"
                     << "      - [0.0, 0.0]\n"
                     << "      - [10.0, 0.0]\n"
+                    << "      - [10.0, 5.0]\n"
+                    << "      - [0.0, 5.0]\n"
                     << "  - name: \"implicit_default_maneuvering\"\n"
                     << "    type: \"ManeuveringZone\"\n"
                     << "    coordinate_type: \"world\"\n"
                     << "    polygon:\n"
                     << "      - [20.0, 0.0]\n"
-                    << "      - [30.0, 0.0]\n";
+                    << "      - [30.0, 0.0]\n"
+                    << "      - [30.0, 5.0]\n"
+                    << "      - [20.0, 5.0]\n";
         ofs_default.close();
 
         std::ofstream ofs_dup("duplicate_zone_map.yaml");

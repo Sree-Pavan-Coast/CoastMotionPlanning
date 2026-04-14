@@ -221,6 +221,58 @@ float DualModelNonHolonomicHeuristic::at(HeuristicModel model,
     return dataFor(model).at(flatIndex(x_idx, y_idx, theta_idx));
 }
 
+std::pair<double, std::vector<std::array<double, 3>>>
+DualModelNonHolonomicHeuristic::samplePath(
+    HeuristicModel model,
+    double from_x, double from_y, double from_yaw,
+    double to_x, double to_y, double to_yaw,
+    double step_size_m) const {
+    if (ompl_spaces_ == nullptr || step_size_m <= 0.0) {
+        return {0.0, {}};
+    }
+
+    ob::SE2StateSpace* space = (model == HeuristicModel::DUBINS)
+        ? static_cast<ob::SE2StateSpace*>(ompl_spaces_->dubins.get())
+        : static_cast<ob::SE2StateSpace*>(ompl_spaces_->reeds_shepp.get());
+
+    ob::State* s1 = space->allocState();
+    ob::State* s2 = space->allocState();
+    ob::State* interp = space->allocState();
+
+    auto* st1 = s1->as<ob::SE2StateSpace::StateType>();
+    st1->setXY(from_x, from_y);
+    st1->setYaw(from_yaw);
+
+    auto* st2 = s2->as<ob::SE2StateSpace::StateType>();
+    st2->setXY(to_x, to_y);
+    st2->setYaw(to_yaw);
+
+    const double path_length = space->distance(s1, s2);
+
+    std::vector<std::array<double, 3>> waypoints;
+    if (path_length <= 0.0) {
+        space->freeState(s1);
+        space->freeState(s2);
+        space->freeState(interp);
+        return {0.0, {}};
+    }
+
+    const int num_steps = std::max(2, static_cast<int>(std::ceil(path_length / step_size_m)) + 1);
+    waypoints.reserve(static_cast<size_t>(num_steps));
+
+    for (int i = 0; i < num_steps; ++i) {
+        const double t = static_cast<double>(i) / static_cast<double>(num_steps - 1);
+        space->interpolate(s1, s2, t, interp);
+        const auto* st = interp->as<ob::SE2StateSpace::StateType>();
+        waypoints.push_back({st->getX(), st->getY(), st->getYaw()});
+    }
+
+    space->freeState(s1);
+    space->freeState(s2);
+    space->freeState(interp);
+    return {path_length, std::move(waypoints)};
+}
+
 bool DualModelNonHolonomicHeuristic::toIndices(float dx,
                                                float dy,
                                                float dtheta,

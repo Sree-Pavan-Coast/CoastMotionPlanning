@@ -13,12 +13,19 @@ namespace config {
 using PlannerBehaviorProfiles =
     std::unordered_map<std::string, planning::PlannerBehaviorProfile>;
 
+struct PlannerBehaviorConfigFile {
+    planning::PlannerBehaviorGlobalConfig global;
+    PlannerBehaviorProfiles profiles;
+};
+
 class PlannerBehaviorParser {
 public:
-    static PlannerBehaviorProfiles parse(const std::string& master_params_filepath,
-                                         const std::string& behaviors_filepath);
+    static PlannerBehaviorConfigFile parse(const std::string& master_params_filepath,
+                                           const std::string& behaviors_filepath);
 
 private:
+    static planning::PlannerBehaviorGlobalConfig parseGlobalConfig(
+        const YAML::Node& behaviors_root);
     static void validateProfileSchema(const YAML::Node& master_node,
                                       const YAML::Node& profile_node,
                                       const std::string& profile_name,

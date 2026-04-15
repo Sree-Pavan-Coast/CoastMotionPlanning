@@ -38,20 +38,34 @@ YAML::Node loadYamlFile(const std::string& filepath, const std::string& label) {
 
 } // namespace
 
-PlannerBehaviorProfiles PlannerBehaviorParser::parse(const std::string& master_params_filepath,
-                                                     const std::string& behaviors_filepath) {
+PlannerBehaviorConfigFile PlannerBehaviorParser::parse(const std::string& master_params_filepath,
+                                                       const std::string& behaviors_filepath) {
     const YAML::Node master_root = loadYamlFile(master_params_filepath, "master params");
     if (!master_root || !master_root.IsMap()) {
         throw std::runtime_error("Master params file must contain a YAML map: " + master_params_filepath);
     }
 
     const YAML::Node behaviors_root = loadYamlFile(behaviors_filepath, "planner behavior");
+    if (!behaviors_root || !behaviors_root.IsMap()) {
+        throw std::runtime_error(
+            "Planner behavior file must contain a YAML map: " + behaviors_filepath);
+    }
+
+    for (const auto& root_entry : behaviors_root) {
+        const std::string key = root_entry.first.as<std::string>("");
+        if (key != "global" && key != "behaviors") {
+            throw std::runtime_error(
+                "Planner behavior file has unexpected top-level key '" + key + "'.");
+        }
+    }
+
     const YAML::Node behaviors_node = behaviors_root["behaviors"];
     if (!behaviors_node || !behaviors_node.IsMap()) {
         throw std::runtime_error("Planner behavior file missing 'behaviors' map: " + behaviors_filepath);
     }
 
-    PlannerBehaviorProfiles profiles;
+    PlannerBehaviorConfigFile config_file;
+    config_file.global = parseGlobalConfig(behaviors_root);
     for (const auto& behavior_entry : behaviors_node) {
         const std::string profile_name = behavior_entry.first.as<std::string>("");
         if (profile_name.empty()) {
@@ -67,14 +81,45 @@ PlannerBehaviorProfiles PlannerBehaviorParser::parse(const std::string& master_p
         }
         validateActiveLayers(active_layers, profile_name);
 
-        profiles.emplace(profile_name, parseProfile(profile_node));
+        config_file.profiles.emplace(profile_name, parseProfile(profile_node));
     }
 
-    if (profiles.empty()) {
+    if (config_file.profiles.empty()) {
         throw std::runtime_error("Planner behavior file has no behavior profiles: " + behaviors_filepath);
     }
 
-    return profiles;
+    return config_file;
+}
+
+planning::PlannerBehaviorGlobalConfig PlannerBehaviorParser::parseGlobalConfig(
+    const YAML::Node& behaviors_root) {
+    planning::PlannerBehaviorGlobalConfig global_config;
+    const YAML::Node global_node = behaviors_root["global"];
+    if (!global_node) {
+        return global_config;
+    }
+    if (!global_node.IsMap()) {
+        throw std::runtime_error("Planner behavior file 'global' node must be a map.");
+    }
+
+    for (const auto& entry : global_node) {
+        const std::string key = entry.first.as<std::string>("");
+        if (key != "debug_mode") {
+            throw std::runtime_error(
+                "Planner behavior file has unexpected global key '" + key + "'.");
+        }
+    }
+
+    const YAML::Node debug_mode = global_node["debug_mode"];
+    if (debug_mode) {
+        if (!debug_mode.IsScalar()) {
+            throw std::runtime_error(
+                "Planner behavior file global.debug_mode must be a scalar.");
+        }
+        global_config.debug_mode = debug_mode.as<bool>();
+    }
+
+    return global_config;
 }
 
 void PlannerBehaviorParser::validateProfileSchema(const YAML::Node& master_node,

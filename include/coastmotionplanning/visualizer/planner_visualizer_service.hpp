@@ -105,6 +105,8 @@ struct PlanResponse {
     std::vector<PoseDto> path;
     std::vector<std::string> behavior_sequence;
     std::vector<std::string> segment_directions;
+    bool debug_mode{false};
+    std::string debug_report_path;
 };
 
 struct PlannerVisualizerServiceConfig {

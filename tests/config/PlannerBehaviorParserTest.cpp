@@ -55,6 +55,8 @@ std::string masterYaml() {
 
 std::string validBehaviorYaml() {
     return
+        "global:\n"
+        "  debug_mode: true\n"
         "behaviors:\n"
         "  primary_profile:\n"
         "    planner:\n"
@@ -221,10 +223,12 @@ protected:
 };
 
 TEST_F(PlannerBehaviorParserTest, ParsesProfilesThatMatchMasterSchema) {
-    const auto profiles =
+    const auto config_file =
         PlannerBehaviorParser::parse("test_master_params.yaml", "valid_behaviors.yaml");
+    const auto& profiles = config_file.profiles;
 
     ASSERT_EQ(profiles.size(), 1);
+    EXPECT_TRUE(config_file.global.debug_mode);
     EXPECT_EQ(profiles.count("primary_profile"), 1);
     EXPECT_EQ(profiles.at("primary_profile").planner.max_planning_time_ms, 200);
     EXPECT_FALSE(profiles.at("primary_profile").planner.only_forward_path);
@@ -243,6 +247,18 @@ TEST_F(PlannerBehaviorParserTest, ParsesProfilesThatMatchMasterSchema) {
         1.0);
     EXPECT_FALSE(
         profiles.at("primary_profile").planner.lane_primitive_suppression);
+}
+
+TEST_F(PlannerBehaviorParserTest, DefaultsGlobalDebugModeToFalseWhenGlobalNodeIsMissing) {
+    std::ofstream no_global("no_global_behaviors.yaml");
+    no_global << validBehaviorYaml().substr(validBehaviorYaml().find("behaviors:\n"));
+    no_global.close();
+
+    const auto config_file =
+        PlannerBehaviorParser::parse("test_master_params.yaml", "no_global_behaviors.yaml");
+
+    EXPECT_FALSE(config_file.global.debug_mode);
+    std::remove("no_global_behaviors.yaml");
 }
 
 TEST_F(PlannerBehaviorParserTest, ThrowsWhenBehaviorOmitsMasterKey) {

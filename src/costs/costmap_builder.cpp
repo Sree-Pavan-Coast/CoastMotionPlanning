@@ -20,8 +20,14 @@ namespace {
 using Clock = std::chrono::high_resolution_clock;
 using Ms = std::chrono::duration<double, std::milli>;
 
-void logTiming(const std::string& label, const Clock::time_point& start) {
+void recordTiming(const std::string& label,
+                  const Clock::time_point& start,
+                  coastmotionplanning::common::ProfilingCollector* profiler) {
     auto elapsed = std::chrono::duration_cast<Ms>(Clock::now() - start);
+    if (profiler != nullptr) {
+        profiler->record(label, elapsed.count());
+        return;
+    }
     std::cout << "[CostmapBuilder] " << label << ": " << elapsed.count() << " ms" << std::endl;
 }
 } // namespace
@@ -29,8 +35,9 @@ void logTiming(const std::string& label, const Clock::time_point& start) {
 CostmapBuilder::CostmapBuilder(
     const CostmapConfig& config,
     const std::vector<std::shared_ptr<zones::Zone>>& all_zones,
-    const robot::RobotBase& robot)
-    : config_(config), all_zones_(all_zones), robot_(robot) {}
+    const robot::RobotBase& robot,
+    common::ProfilingCollector* profiler)
+    : config_(config), all_zones_(all_zones), robot_(robot), profiler_(profiler) {}
 
 grid_map::GridMap CostmapBuilder::build(const math::Pose2d& start,
                                          const math::Pose2d& goal) {
@@ -40,10 +47,10 @@ grid_map::GridMap CostmapBuilder::build(const math::Pose2d& start,
     auto t = Clock::now();
     ZoneSelector selector;
     auto selection = selector.select(start, goal, all_zones_, config_.alpha_shape_alpha);
-    logTiming("Zone selection + concave hull", t);
+    recordTiming("costmap.zone_selection", t, profiler_);
 
     auto costmap = build(selection, goal);
-    logTiming("TOTAL BUILD TIME", total_start);
+    recordTiming("costmap.total_build", total_start, profiler_);
     return costmap;
 }
 
@@ -79,37 +86,37 @@ grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
         grid_map::Length(length_x, length_y),
         config_.resolution,
         grid_map::Position(center_x, center_y));
-    logTiming("Grid creation", t);
+    recordTiming("costmap.grid_creation", t, profiler_);
 
     // ---- Step 3: Static Obstacles ----
     t = Clock::now();
     StaticObstacleLayer::build(costmap_, selection.search_boundary);
-    logTiming("Static obstacles layer", t);
+    recordTiming("costmap.static_obstacles_layer", t, profiler_);
 
     // ---- Step 4: Inflation ----
     t = Clock::now();
     double inscribed_r = std::min(config_.inscribed_radius_m, robot_.getMaxWidth() / 2.0);
     InflationLayer::build(costmap_, config_.inflation_radius_m, inscribed_r,
                           config_.cost_scaling_factor);
-    logTiming("Inflation layer", t);
+    recordTiming("costmap.inflation_layer", t, profiler_);
 
     // ---- Step 5: Zone Constraints ----
     t = Clock::now();
     ZoneConstraintsLayer::build(costmap_, selection.selected_zones,
                                  selection.search_boundary);
-    logTiming("Zone constraints layer", t);
+    recordTiming("costmap.zone_constraints_layer", t, profiler_);
 
     // ---- Step 6: Lane Centerline ----
     t = Clock::now();
     LaneCenterlineLayer::build(costmap_, selection.selected_zones,
                                 config_.max_lane_cost, config_.max_lane_half_width);
-    logTiming("Lane centerline layer", t);
+    recordTiming("costmap.lane_centerline_layer", t, profiler_);
 
     // ---- Step 7: Holonomic-with-Obstacles Heuristic ----
     t = Clock::now();
     grid_map::Position goal_pos(goal.x, goal.y);
     HolonomicObstaclesHeuristic::compute(costmap_, goal_pos);
-    logTiming("Holonomic heuristic (Dijkstra)", t);
+    recordTiming("costmap.holonomic_heuristic_layer", t, profiler_);
 
     // ---- Step 8: Combined Cost ----
     t = Clock::now();
@@ -138,7 +145,7 @@ grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
             }
         }
     }
-    logTiming("Combined cost layer", t);
+    recordTiming("costmap.combined_cost_layer", t, profiler_);
 
     return costmap_;
 }

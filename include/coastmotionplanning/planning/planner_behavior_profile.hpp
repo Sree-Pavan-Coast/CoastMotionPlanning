@@ -8,6 +8,10 @@
 namespace coastmotionplanning {
 namespace planning {
 
+struct PlannerBehaviorGlobalConfig {
+    bool debug_mode{false};
+};
+
 struct PlannerBehaviorPlannerConfig {
     int max_planning_time_ms{0};
     double xy_grid_resolution_m{0.0};

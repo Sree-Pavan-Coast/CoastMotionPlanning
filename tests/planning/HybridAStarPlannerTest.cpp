@@ -72,7 +72,8 @@ std::string readFile(const std::string& path) {
 
 PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
                                                        double min_same_motion_length_m,
-                                                       const std::string& robot_name = "E_Transit") {
+                                                       const std::string& robot_name = "E_Transit",
+                                                       bool debug_mode = false) {
     const std::filesystem::path temp_dir =
         std::filesystem::temp_directory_path() / "coastmotionplanning_hybrid_astar_test";
     std::filesystem::create_directories(temp_dir);
@@ -82,21 +83,53 @@ PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
     master_file.close();
 
     std::string behaviors = readFile(repoPath("configs/planner_behaviors.yaml"));
+    const std::string debug_mode_disabled = "  debug_mode: false";
+    const size_t debug_mode_pos = behaviors.find(debug_mode_disabled);
+    if (debug_mode && debug_mode_pos == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate global.debug_mode in planner_behaviors.yaml");
+    }
+    if (debug_mode) {
+        behaviors.replace(
+            debug_mode_pos,
+            debug_mode_disabled.size(),
+            "  debug_mode: true");
+    }
+    const size_t primary_profile_pos = behaviors.find("  primary_profile:\n");
+    if (primary_profile_pos == std::string::npos) {
+        throw std::runtime_error("Failed to locate primary_profile in planner_behaviors.yaml");
+    }
     const std::string only_forward_false = "      only_forward_path: false";
-    const size_t only_forward_pos = behaviors.find(only_forward_false);
+    const size_t only_forward_pos = behaviors.find(only_forward_false, primary_profile_pos);
     if (only_forward_pos == std::string::npos) {
-        throw std::runtime_error("Failed to locate only_forward_path in planner_behaviors.yaml");
+        throw std::runtime_error(
+            "Failed to locate primary_profile.only_forward_path in planner_behaviors.yaml");
     }
     behaviors.replace(
         only_forward_pos,
         only_forward_false.size(),
         std::string("      only_forward_path: ") + (only_forward_path ? "true" : "false"));
 
-    const std::string current_min_same_motion = "      min_path_len_in_same_motion: 1.0";
-    const size_t min_same_motion_pos = behaviors.find(current_min_same_motion);
+    const size_t min_same_motion_key_pos = behaviors.find(
+        "      min_path_len_in_same_motion:",
+        primary_profile_pos);
+    if (min_same_motion_key_pos == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate primary_profile.min_path_len_in_same_motion in planner_behaviors.yaml");
+    }
+    const size_t min_same_motion_line_end =
+        behaviors.find('\n', min_same_motion_key_pos);
+    if (min_same_motion_line_end == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate end of primary_profile.min_path_len_in_same_motion line.");
+    }
+    const std::string current_min_same_motion = behaviors.substr(
+        min_same_motion_key_pos,
+        min_same_motion_line_end - min_same_motion_key_pos);
+    const size_t min_same_motion_pos = behaviors.find(current_min_same_motion, primary_profile_pos);
     if (min_same_motion_pos == std::string::npos) {
         throw std::runtime_error(
-            "Failed to locate min_path_len_in_same_motion in planner_behaviors.yaml");
+            "Failed to locate primary_profile.min_path_len_in_same_motion in planner_behaviors.yaml");
     }
     behaviors.replace(
         min_same_motion_pos,
@@ -440,6 +473,39 @@ TEST(HybridAStarPlannerTest, AnalyticExpansionOutputHonorsMinimumSameMotionLengt
     for (const double run_length : run_lengths) {
         EXPECT_GE(run_length + 1e-6, 5.0);
     }
+}
+
+TEST(HybridAStarPlannerTest, DebugModeCollectsProfilingScopesOnSuccess) {
+    const PlannerBehaviorSet behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(false, 1.0, "Pro_XD", true);
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -4.0, 12.0, 4.0)
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(2.0, 0.0);
+    request.goal = makePose(7.0, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    ASSERT_NE(result.debug_trace, nullptr);
+    EXPECT_FALSE(result.debug_trace->profiling_scopes.empty());
+    EXPECT_GE(result.debug_trace->total_planning_ms, 0.0);
+
+    const auto has_scope = [&](const std::string& scope_name) {
+        return std::any_of(
+            result.debug_trace->profiling_scopes.begin(),
+            result.debug_trace->profiling_scopes.end(),
+            [&](const auto& scope) { return scope.scope_name == scope_name; });
+    };
+
+    EXPECT_TRUE(has_scope("costmap.grid_creation"));
+    EXPECT_TRUE(has_scope("planner.goal_check"));
+    EXPECT_TRUE(has_scope("planner.primitive_expansion_attempt"));
 }
 
 } // namespace

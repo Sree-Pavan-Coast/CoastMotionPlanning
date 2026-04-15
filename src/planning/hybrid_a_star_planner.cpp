@@ -21,6 +21,8 @@
 #include "coastmotionplanning/costs/costmap_types.hpp"
 #include "coastmotionplanning/costs/zone_selector.hpp"
 #include "coastmotionplanning/motion_primitives/car_motion_table.hpp"
+#include "coastmotionplanning/zones/maneuvering_zone.hpp"
+#include "coastmotionplanning/zones/track_main_road.hpp"
 
 namespace coastmotionplanning {
 namespace planning {
@@ -227,6 +229,47 @@ robot::RobotState makeRobotState(const math::Pose2d& pose) {
     return state;
 }
 
+double elapsedMilliseconds(const Clock::time_point& start,
+                           const Clock::time_point& end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+std::string zoneLabel(const std::shared_ptr<zones::Zone>& zone) {
+    if (zone == nullptr) {
+        return "";
+    }
+    if (zone->getName().has_value() && !zone->getName()->empty()) {
+        return zone->getName().value();
+    }
+    if (std::dynamic_pointer_cast<zones::TrackMainRoad>(zone) != nullptr) {
+        return "TrackMainRoad";
+    }
+    if (std::dynamic_pointer_cast<zones::ManeuveringZone>(zone) != nullptr) {
+        return "ManeuveringZone";
+    }
+    return "Zone";
+}
+
+std::string turnDirectionName(TurnDirection turn_direction) {
+    switch (turn_direction) {
+    case TurnDirection::FORWARD:
+        return "FORWARD";
+    case TurnDirection::LEFT:
+        return "LEFT";
+    case TurnDirection::RIGHT:
+        return "RIGHT";
+    case TurnDirection::REVERSE:
+        return "REVERSE";
+    case TurnDirection::REV_LEFT:
+        return "REV_LEFT";
+    case TurnDirection::REV_RIGHT:
+        return "REV_RIGHT";
+    case TurnDirection::UNKNOWN:
+        return "UNKNOWN";
+    }
+    return "UNKNOWN";
+}
+
 double readLayerCost(const grid_map::GridMap& costmap,
                      const std::string& layer,
                      const grid_map::Position& position) {
@@ -254,7 +297,9 @@ double readRawLayerValue(const grid_map::GridMap& costmap,
 }
 
 double computeHolonomicHeuristic(const grid_map::GridMap& costmap,
-                                 const grid_map::Position& position) {
+                                 const grid_map::Position& position,
+                                 common::ProfilingCollector* profiler = nullptr) {
+    common::ScopedProfilingTimer timer(profiler, "planner.holonomic_heuristic_read");
     if (!costmap.exists(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES) ||
         !costmap.isInside(position)) {
         return LARGE_COST;
@@ -273,7 +318,9 @@ double computeHolonomicHeuristic(const grid_map::GridMap& costmap,
 double computeNonHolonomicHeuristic(const DualModelNonHolonomicHeuristic& heuristic,
                                     HeuristicModel model,
                                     const math::Pose2d& from,
-                                    const math::Pose2d& goal) {
+                                    const math::Pose2d& goal,
+                                    common::ProfilingCollector* profiler = nullptr) {
+    common::ScopedProfilingTimer timer(profiler, "planner.non_holonomic_heuristic_lookup");
     const double dx_world = goal.x - from.x;
     const double dy_world = goal.y - from.y;
     const double cos_yaw = std::cos(from.theta.radians());
@@ -512,7 +559,9 @@ bool isGoalSatisfied(const SearchNode& node,
 }
 
 HybridAStarPlannerResult reconstructResult(const std::vector<SearchNode>& nodes,
-                                           int goal_index) {
+                                           int goal_index,
+                                           common::ProfilingCollector* profiler = nullptr) {
+    common::ScopedProfilingTimer timer(profiler, "planner.result_reconstruction");
     HybridAStarPlannerResult result;
     result.success = true;
 
@@ -550,46 +599,107 @@ HybridAStarPlanner::HybridAStarPlanner(
 
 HybridAStarPlannerResult HybridAStarPlanner::plan(
     const HybridAStarPlannerRequest& request) const {
+    const Clock::time_point plan_start_time = Clock::now();
     HybridAStarPlannerResult failure_result;
+    const std::shared_ptr<HybridAStarPlannerDebugTrace> debug_trace =
+        behavior_set_.debugModeEnabled()
+        ? std::make_shared<HybridAStarPlannerDebugTrace>()
+        : nullptr;
+    common::ProfilingCollector profiling_collector;
+    common::ProfilingCollector* profiler =
+        debug_trace != nullptr ? &profiling_collector : nullptr;
+    size_t debug_nodes_allocated = 0;
+    size_t debug_unique_state_count = 0;
+    size_t debug_open_queue_peak_size = 0;
+    Clock::time_point search_loop_start_time{};
+    bool search_loop_started = false;
+
+    if (debug_trace != nullptr) {
+        debug_trace->initial_behavior_name = request.initial_behavior_name;
+    }
+
+    const auto finalizeResult =
+        [&](HybridAStarPlannerResult result) -> HybridAStarPlannerResult {
+        if (debug_trace != nullptr) {
+            if (search_loop_started) {
+                debug_trace->search_loop_ms =
+                    elapsedMilliseconds(search_loop_start_time, Clock::now());
+            }
+            debug_trace->nodes_allocated = debug_nodes_allocated;
+            debug_trace->unique_state_count = debug_unique_state_count;
+            debug_trace->open_queue_peak_size = debug_open_queue_peak_size;
+            debug_trace->total_planning_ms =
+                elapsedMilliseconds(plan_start_time, Clock::now());
+            debug_trace->profiling_scopes =
+                profiling_collector.snapshotSortedByTotalMs();
+            result.debug_trace = debug_trace;
+        }
+        return result;
+    };
+
+    const auto failWithDetail =
+        [&](std::string detail) -> HybridAStarPlannerResult {
+        failure_result.detail = std::move(detail);
+        if (debug_trace != nullptr) {
+            debug_trace->terminal_reason = failure_result.detail;
+        }
+        return finalizeResult(failure_result);
+    };
 
     if (!behavior_set_.contains(request.initial_behavior_name)) {
-        failure_result.detail =
-            "Initial planner behavior '" + request.initial_behavior_name + "' is not defined.";
-        return failure_result;
+        return failWithDetail(
+            "Initial planner behavior '" + request.initial_behavior_name + "' is not defined.");
     }
 
     const PlannerBehaviorProfile& initial_profile =
         behavior_set_.get(request.initial_behavior_name);
     if (initial_profile.motion_primitives.min_turning_radius_m <= 0.0 ||
         initial_profile.motion_primitives.max_steer_angle_rad <= 0.0) {
-        failure_result.detail =
-            "Motion primitive constraints were not initialized from the selected robot model.";
-        return failure_result;
+        return failWithDetail(
+            "Motion primitive constraints were not initialized from the selected robot model.");
     }
 
     ZoneSelectionResult selection;
     try {
+        const Clock::time_point selection_start_time = Clock::now();
+        common::ScopedProfilingTimer selection_timer(profiler, "planner.zone_selection");
         costs::ZoneSelector selector;
         selection = selector.select(
             request.start,
             request.goal,
             all_zones_,
             initial_profile.costmap.alpha_shape_alpha);
+        if (debug_trace != nullptr) {
+            debug_trace->zone_selection_ms =
+                elapsedMilliseconds(selection_start_time, Clock::now());
+            for (const auto& zone : selection.selected_zones) {
+                debug_trace->selected_zone_names.push_back(zoneLabel(zone));
+            }
+        }
     } catch (const std::exception& e) {
-        failure_result.detail = e.what();
-        return failure_result;
+        return failWithDetail(e.what());
     }
 
     const auto start_zone = costs::ZoneSelector::findContainingZone(
         geometry::Point2d(request.start.x, request.start.y), selection.selected_zones);
+    const auto goal_zone = costs::ZoneSelector::findContainingZone(
+        geometry::Point2d(request.goal.x, request.goal.y), selection.selected_zones);
+    if (debug_trace != nullptr) {
+        debug_trace->start_zone_name = zoneLabel(start_zone);
+        debug_trace->goal_zone_name = zoneLabel(goal_zone);
+    }
     if (start_zone == nullptr) {
-        failure_result.detail = "Start pose is not inside the selected planning zones.";
-        return failure_result;
+        return failWithDetail("Start pose is not inside the selected planning zones.");
     }
 
     costs::CostmapBuilder builder(
-        initial_profile.makeCostmapConfig(), all_zones_, car_);
+        initial_profile.makeCostmapConfig(), all_zones_, car_, profiler);
+    const Clock::time_point costmap_start_time = Clock::now();
     grid_map::GridMap costmap = builder.build(selection, request.goal);
+    if (debug_trace != nullptr) {
+        debug_trace->costmap_build_ms =
+            elapsedMilliseconds(costmap_start_time, Clock::now());
+    }
 
     CollisionCheckerConfig collision_config;
     collision_config.obstacle_layer = costs::CostmapLayerNames::COMBINED_COST;
@@ -597,13 +707,23 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         static_cast<float>(initial_profile.collision_checker.lethal_threshold);
     CollisionChecker collision_checker(collision_config);
 
-    if (collision_checker.checkCollision(costmap, car_, makeRobotState(request.start)).in_collision) {
-        failure_result.detail = "Start pose is in collision on the selected-zone costmap.";
-        return failure_result;
+    const bool start_in_collision = [&]() {
+        common::ScopedProfilingTimer timer(
+            profiler, "planner.collision_check.start_validation");
+        return collision_checker.checkCollision(
+            costmap, car_, makeRobotState(request.start)).in_collision;
+    }();
+    if (start_in_collision) {
+        return failWithDetail("Start pose is in collision on the selected-zone costmap.");
     }
-    if (collision_checker.checkCollision(costmap, car_, makeRobotState(request.goal)).in_collision) {
-        failure_result.detail = "Goal pose is in collision on the selected-zone costmap.";
-        return failure_result;
+    const bool goal_in_collision = [&]() {
+        common::ScopedProfilingTimer timer(
+            profiler, "planner.collision_check.goal_validation");
+        return collision_checker.checkCollision(
+            costmap, car_, makeRobotState(request.goal)).in_collision;
+    }();
+    if (goal_in_collision) {
+        return failWithDetail("Goal pose is in collision on the selected-zone costmap.");
     }
 
     MotionTableConfig motion_config;
@@ -613,6 +733,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     motion_config.num_angle_quantization = static_cast<unsigned int>(
         initial_profile.motion_primitives.num_angle_bins);
 
+    const Clock::time_point heuristic_setup_start_time = Clock::now();
     CarMotionTable motion_table;
     motion_table.initReedsShepp(motion_config);
 
@@ -622,6 +743,10 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     if (!request.dual_model_lut_path.empty()) {
         heuristic.loadFromFile(request.dual_model_lut_path);
     }
+    if (debug_trace != nullptr) {
+        debug_trace->heuristic_setup_ms =
+            elapsedMilliseconds(heuristic_setup_start_time, Clock::now());
+    }
 
     const double xy_resolution_m = initial_profile.planner.xy_grid_resolution_m;
     const double yaw_bin_size_rad = motion_table.getBinSize();
@@ -630,6 +755,8 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         computeGlobalMaxSameMotionLength(behavior_set_);
     const auto deadline = Clock::now() + std::chrono::milliseconds(
         initial_profile.planner.max_planning_time_ms);
+    search_loop_start_time = Clock::now();
+    search_loop_started = true;
 
     // Analytic expansion parameters
     const double analytic_max_length = initial_profile.planner.analytic_expansion_max_length_m;
@@ -646,8 +773,12 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         ? HeuristicModel::REEDS_SHEPP
         : HeuristicModel::DUBINS;
     const double start_h = std::max(
-        computeHolonomicHeuristic(costmap, grid_map::Position(request.start.x, request.start.y)),
-        computeNonHolonomicHeuristic(heuristic, start_model, request.start, request.goal));
+        computeHolonomicHeuristic(
+            costmap,
+            grid_map::Position(request.start.x, request.start.y),
+            profiler),
+        computeNonHolonomicHeuristic(
+            heuristic, start_model, request.start, request.goal, profiler));
 
     SearchNode start_node;
     start_node.pose = request.start;
@@ -660,9 +791,11 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     std::vector<SearchNode> nodes;
     nodes.reserve(50000);
     nodes.push_back(start_node);
+    debug_nodes_allocated = nodes.size();
 
     std::priority_queue<OpenEntry, std::vector<OpenEntry>, std::greater<OpenEntry>> open_queue;
     open_queue.push(OpenEntry{start_node.g + start_node.h, start_node.h, 0, 0});
+    debug_open_queue_peak_size = std::max(debug_open_queue_peak_size, open_queue.size());
 
     std::unordered_map<DiscreteStateKey, double, DiscreteStateKeyHash> best_g_by_key;
     best_g_by_key.reserve(50000);
@@ -674,22 +807,38 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             xy_resolution_m,
             global_max_same_motion_length_m),
         0.0);
+    debug_unique_state_count = best_g_by_key.size();
 
     uint64_t insertion_order = 1;
     uint64_t expansion_count = 0;
+    struct AnalyticAttemptOutcome {
+        HybridAStarPlannerResult result;
+        PlannerAnalyticDebugEvent debug_event;
+    };
 
     // Lambda: attempt analytic expansion from a node to the goal.
     // Returns a result with success=true if a collision-free path is found.
     auto tryAnalyticExpansion = [&](const SearchNode& node,
-                                   size_t node_index) -> HybridAStarPlannerResult {
-        HybridAStarPlannerResult empty;
+                                   size_t node_index,
+                                   const std::string& trigger) -> AnalyticAttemptOutcome {
+        common::ScopedProfilingTimer analytic_timer(
+            profiler, "planner.analytic_expansion_attempt");
+        AnalyticAttemptOutcome outcome;
+        outcome.debug_event.attempted = true;
+        outcome.debug_event.trigger = trigger;
+        outcome.debug_event.distance_to_goal_m =
+            std::hypot(request.goal.x - node.pose.x, request.goal.y - node.pose.y);
         if (!heuristic.hasOmplSpaces()) {
-            return empty;
+            outcome.debug_event.outcome = "failed";
+            outcome.debug_event.detail = "no_ompl_spaces";
+            return outcome;
         }
 
         // Don't expand if the node hasn't satisfied its minimum same-motion run
         if (node.same_motion_remaining_to_change_m > MOTION_EPSILON) {
-            return empty;
+            outcome.debug_event.outcome = "failed";
+            outcome.debug_event.detail = "same_motion_guard";
+            return outcome;
         }
 
         const PlannerBehaviorProfile& node_profile =
@@ -699,14 +848,26 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             ? HeuristicModel::REEDS_SHEPP
             : HeuristicModel::DUBINS;
 
-        auto [path_length, waypoints] = heuristic.samplePath(
-            model,
-            node.pose.x, node.pose.y, node.pose.theta.radians(),
-            request.goal.x, request.goal.y, request.goal.theta.radians(),
-            analytic_step_size);
+        std::pair<double, std::vector<std::array<double, 3>>> sampled_path;
+        {
+            common::ScopedProfilingTimer sample_path_timer(
+                profiler, "planner.analytic_sample_path");
+            sampled_path = heuristic.samplePath(
+                model,
+                node.pose.x, node.pose.y, node.pose.theta.radians(),
+                request.goal.x, request.goal.y, request.goal.theta.radians(),
+                analytic_step_size);
+        }
+        auto& path_length = sampled_path.first;
+        auto& waypoints = sampled_path.second;
+        outcome.debug_event.path_length_m = path_length;
+        outcome.debug_event.waypoint_count = waypoints.size();
 
         if (waypoints.empty() || path_length > analytic_max_length) {
-            return empty;
+            outcome.debug_event.outcome = "failed";
+            outcome.debug_event.detail =
+                waypoints.empty() ? "no_waypoints" : "path_length_exceeded";
+            return outcome;
         }
 
         // Check all waypoints for collision and resolve behaviors
@@ -723,19 +884,33 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
 
             const grid_map::Position wp_pos(rs.x, rs.y);
             if (!costmap.isInside(wp_pos)) {
-                return empty;
+                outcome.debug_event.outcome = "failed";
+                outcome.debug_event.detail = "waypoint_out_of_bounds";
+                return outcome;
             }
 
-            if (collision_checker.checkCollision(costmap, car_, rs).in_collision) {
-                return empty;
+            const bool analytic_collision = [&]() {
+                common::ScopedProfilingTimer collision_timer(
+                    profiler, "planner.collision_check.analytic");
+                return collision_checker.checkCollision(costmap, car_, rs).in_collision;
+            }();
+            if (analytic_collision) {
+                outcome.debug_event.outcome = "failed";
+                outcome.debug_event.detail = "waypoint_collision";
+                return outcome;
             }
 
             // Resolve zone/behavior for this waypoint
             math::Pose2d wp_pose(wp[0], wp[1],
                                  math::Angle::from_radians(wp[2]));
-            const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-                wp_pose, costmap, node.zone, node.behavior_name,
-                selection.selected_zones, behavior_set_);
+            ResolvedPlannerBehavior resolved;
+            {
+                common::ScopedProfilingTimer behavior_timer(
+                    profiler, "planner.behavior_resolution");
+                resolved = PlannerBehaviorResolver::resolve(
+                    wp_pose, costmap, node.zone, node.behavior_name,
+                    selection.selected_zones, behavior_set_);
+            }
             wp_resolutions.push_back(
                 resolved.profile != nullptr
                     ? resolved
@@ -750,9 +925,13 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 wp_resolutions,
                 global_max_same_motion_length_m);
         if (!analytic_validation.valid) {
-            return empty;
+            outcome.debug_event.outcome = "failed";
+            outcome.debug_event.detail = "path_validation_failed";
+            return outcome;
         }
 
+        common::ScopedProfilingTimer reconstruction_timer(
+            profiler, "planner.result_reconstruction");
         // Build the result: search path to current node + analytic path to goal
         HybridAStarPlannerResult result;
         result.success = true;
@@ -792,17 +971,25 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         result.behavior_sequence = std::move(prefix_behaviors);
         result.segment_directions = std::move(prefix_directions);
         result.detail = "Path found (analytic expansion).";
-        return result;
+        outcome.result = std::move(result);
+        outcome.debug_event.outcome = "success";
+        return outcome;
     };
 
     while (!open_queue.empty()) {
         if (Clock::now() >= deadline) {
-            failure_result.detail = "Hybrid A* search timed out before finding a path.";
-            return failure_result;
+            if (debug_trace != nullptr) {
+                debug_trace->terminal_reason =
+                    "Hybrid A* search timed out before finding a path.";
+            }
+            return failWithDetail("Hybrid A* search timed out before finding a path.");
         }
 
         const OpenEntry entry = open_queue.top();
         open_queue.pop();
+        if (debug_trace != nullptr) {
+            ++debug_trace->expansions_popped;
+        }
 
         // Copy, not reference: nodes.push_back() in the inner loop can
         // trigger reallocation which would invalidate a reference.
@@ -815,15 +1002,52 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             global_max_same_motion_length_m);
         const auto best_it = best_g_by_key.find(current_key);
         if (best_it == best_g_by_key.end() || current_node.g > best_it->second + 1e-6) {
+            if (debug_trace != nullptr) {
+                ++debug_trace->stale_entries_skipped;
+            }
             continue;
         }
 
-        if (isGoalSatisfied(current_node,
-                            request.goal,
-                            goal_distance_tolerance,
-                            yaw_bin_size_rad) &&
-            isTerminalMotionSegmentValid(current_node)) {
-            return reconstructResult(nodes, static_cast<int>(entry.node_index));
+        PlannerExpansionDebugEvent expansion_debug;
+        if (debug_trace != nullptr) {
+            expansion_debug.expansion_index = expansion_count;
+            expansion_debug.node_index = entry.node_index;
+            expansion_debug.pose = current_node.pose;
+            expansion_debug.zone_name = zoneLabel(current_node.zone);
+            expansion_debug.behavior_name = current_node.behavior_name;
+            expansion_debug.g = current_node.g;
+            expansion_debug.h = current_node.h;
+            expansion_debug.f = entry.f;
+            expansion_debug.distance_to_goal_m =
+                std::hypot(request.goal.x - current_node.pose.x,
+                           request.goal.y - current_node.pose.y);
+            expansion_debug.open_queue_size_after_pop = open_queue.size();
+        }
+
+        bool goal_satisfied = false;
+        bool terminal_motion_valid = false;
+        {
+            common::ScopedProfilingTimer goal_check_timer(
+                profiler, "planner.goal_check");
+            goal_satisfied = isGoalSatisfied(current_node,
+                                            request.goal,
+                                            goal_distance_tolerance,
+                                            yaw_bin_size_rad);
+            terminal_motion_valid = isTerminalMotionSegmentValid(current_node);
+        }
+        if (debug_trace != nullptr) {
+            ++debug_trace->goal_checks;
+            expansion_debug.goal_satisfied = goal_satisfied;
+            expansion_debug.terminal_motion_valid = terminal_motion_valid;
+        }
+        if (goal_satisfied && terminal_motion_valid) {
+            if (debug_trace != nullptr) {
+                ++debug_trace->goal_hits;
+                debug_trace->expansions.push_back(std::move(expansion_debug));
+                debug_trace->terminal_reason = "goal_satisfied";
+            }
+            return finalizeResult(
+                reconstructResult(nodes, static_cast<int>(entry.node_index), profiler));
         }
 
         const PlannerBehaviorProfile& current_profile =
@@ -842,16 +1066,50 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             current_profile.planner.near_goal_analytic_radius_m > 0.0 &&
             distance_to_goal <= current_profile.planner.near_goal_analytic_radius_m;
         if (periodic_analytic_shot || near_goal_analytic_shot) {
-            auto analytic_result = tryAnalyticExpansion(current_node, entry.node_index);
-            if (analytic_result.success) {
-                return analytic_result;
+            const std::string analytic_trigger =
+                periodic_analytic_shot && near_goal_analytic_shot
+                ? "periodic_and_near_goal"
+                : (periodic_analytic_shot ? "periodic" : "near_goal");
+            const auto analytic_outcome =
+                tryAnalyticExpansion(current_node, entry.node_index, analytic_trigger);
+            if (debug_trace != nullptr) {
+                ++debug_trace->analytic_attempts;
+                expansion_debug.analytic_attempted = true;
+                expansion_debug.analytic_event = analytic_outcome.debug_event;
+                if (analytic_outcome.result.success) {
+                    ++debug_trace->analytic_successes;
+                } else if (analytic_outcome.debug_event.detail == "no_ompl_spaces") {
+                    ++debug_trace->analytic_fail_no_ompl;
+                } else if (analytic_outcome.debug_event.detail == "same_motion_guard") {
+                    ++debug_trace->analytic_fail_same_motion_guard;
+                } else if (analytic_outcome.debug_event.detail == "path_length_exceeded" ||
+                           analytic_outcome.debug_event.detail == "no_waypoints") {
+                    ++debug_trace->analytic_fail_path_length;
+                } else if (analytic_outcome.debug_event.detail == "waypoint_out_of_bounds") {
+                    ++debug_trace->analytic_fail_out_of_bounds;
+                } else if (analytic_outcome.debug_event.detail == "waypoint_collision") {
+                    ++debug_trace->analytic_fail_collision;
+                } else {
+                    ++debug_trace->analytic_fail_validation;
+                }
+            }
+            if (analytic_outcome.result.success) {
+                if (debug_trace != nullptr) {
+                    debug_trace->expansions.push_back(std::move(expansion_debug));
+                    debug_trace->terminal_reason = "analytic_expansion_success";
+                }
+                return finalizeResult(analytic_outcome.result);
             }
         }
 
-        const auto projections = motion_table.getProjections(
-            static_cast<float>(current_node.pose.x / xy_resolution_m),
-            static_cast<float>(current_node.pose.y / xy_resolution_m),
-            current_node.heading_bin);
+        const auto projections = [&]() {
+            common::ScopedProfilingTimer projections_timer(
+                profiler, "planner.motion_table_projections");
+            return motion_table.getProjections(
+                static_cast<float>(current_node.pose.x / xy_resolution_m),
+                static_cast<float>(current_node.pose.y / xy_resolution_m),
+                current_node.heading_bin);
+        }();
 
         bool lane_following_node = false;
         size_t forward_primitive_idx = projections.size();
@@ -877,16 +1135,49 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                         lane_following_node = true;
                         forward_primitive_idx = static_cast<size_t>(
                             std::distance(projections.begin(), forward_it));
+                        if (debug_trace != nullptr) {
+                            ++debug_trace->lane_following_candidates;
+                            expansion_debug.lane_following_candidate = true;
+                        }
                     }
                 }
             }
         }
 
+        const auto recordPrimitiveEvent = [&](PlannerPrimitiveDebugEvent primitive_event) {
+            if (debug_trace == nullptr) {
+                return;
+            }
+            if (primitive_event.outcome == "out_of_bounds") {
+                ++debug_trace->primitive_out_of_bounds;
+            } else if (primitive_event.outcome == "cross_track_pruned") {
+                ++debug_trace->primitive_cross_track_pruned;
+            } else if (primitive_event.outcome == "behavior_unresolved") {
+                ++debug_trace->primitive_behavior_unresolved;
+            } else if (primitive_event.outcome == "primitive_disallowed") {
+                ++debug_trace->primitive_disallowed;
+            } else if (primitive_event.outcome == "collision") {
+                ++debug_trace->primitive_collision;
+            } else if (primitive_event.outcome == "motion_change_blocked") {
+                ++debug_trace->primitive_motion_change_blocked;
+            } else if (primitive_event.outcome == "dominated") {
+                ++debug_trace->primitive_dominated;
+            } else if (primitive_event.outcome == "enqueued") {
+                ++debug_trace->primitive_enqueued;
+            }
+            expansion_debug.primitive_events.push_back(std::move(primitive_event));
+        };
+
         const auto tryExpandPrimitive = [&](size_t primitive_idx) -> bool {
+            common::ScopedProfilingTimer primitive_timer(
+                profiler, "planner.primitive_expansion_attempt");
             const auto& projection = projections[primitive_idx];
             const unsigned int successor_heading_bin =
                 static_cast<unsigned int>(std::lround(projection.theta)) %
                 motion_table.getNumAngleBins();
+            const double travel_m =
+                static_cast<double>(motion_table.getTravelCost(
+                    static_cast<unsigned int>(primitive_idx))) * xy_resolution_m;
 
             math::Pose2d successor_pose;
             successor_pose.x = static_cast<double>(projection.x) * xy_resolution_m;
@@ -894,8 +1185,21 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             successor_pose.theta = math::Angle::from_radians(
                 motion_table.getAngleFromBin(successor_heading_bin));
 
+            PlannerPrimitiveDebugEvent primitive_event;
+            if (debug_trace != nullptr) {
+                primitive_event.primitive_index = primitive_idx;
+                primitive_event.turn_direction = turnDirectionName(projection.turn_dir);
+                primitive_event.successor_pose = successor_pose;
+                primitive_event.travel_m = travel_m;
+            }
+
             const grid_map::Position successor_position(successor_pose.x, successor_pose.y);
             if (!costmap.isInside(successor_position)) {
+                if (debug_trace != nullptr) {
+                    primitive_event.outcome = "out_of_bounds";
+                    primitive_event.detail = "successor_outside_costmap";
+                    recordPrimitiveEvent(std::move(primitive_event));
+                }
                 return false;
             }
 
@@ -904,20 +1208,43 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     costmap, costs::CostmapLayerNames::LANE_DISTANCE, successor_position);
                 if (std::isfinite(lane_distance) &&
                     lane_distance > current_profile.planner.max_cross_track_error_m) {
+                    if (debug_trace != nullptr) {
+                        primitive_event.outcome = "cross_track_pruned";
+                        primitive_event.detail = "lane_distance_exceeded";
+                        recordPrimitiveEvent(std::move(primitive_event));
+                    }
                     return false;
                 }
             }
 
-            const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-                successor_pose,
-                costmap,
-                current_node.zone,
-                current_node.behavior_name,
-                selection.selected_zones,
-                behavior_set_);
+            const ResolvedPlannerBehavior resolved = [&]() {
+                common::ScopedProfilingTimer behavior_timer(
+                    profiler, "planner.behavior_resolution");
+                return PlannerBehaviorResolver::resolve(
+                    successor_pose,
+                    costmap,
+                    current_node.zone,
+                    current_node.behavior_name,
+                    selection.selected_zones,
+                    behavior_set_);
+            }();
             if (resolved.profile == nullptr ||
                 !isPrimitiveAllowed(projection.turn_dir, resolved)) {
+                if (debug_trace != nullptr) {
+                    primitive_event.resolved_behavior_name = resolved.behavior_name;
+                    primitive_event.resolved_zone_name = zoneLabel(resolved.zone);
+                    primitive_event.outcome =
+                        resolved.profile == nullptr ? "behavior_unresolved" : "primitive_disallowed";
+                    primitive_event.detail =
+                        resolved.profile == nullptr ? "resolver_returned_null_profile"
+                                                    : "primitive_not_allowed_for_behavior";
+                    recordPrimitiveEvent(std::move(primitive_event));
+                }
                 return false;
+            }
+            if (debug_trace != nullptr) {
+                primitive_event.resolved_behavior_name = resolved.behavior_name;
+                primitive_event.resolved_zone_name = zoneLabel(resolved.zone);
             }
 
             const float successor_lethal_threshold = static_cast<float>(
@@ -926,33 +1253,61 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 CollisionCheckerConfig adjusted_config = collision_config;
                 adjusted_config.lethal_threshold = successor_lethal_threshold;
                 CollisionChecker adjusted_checker(adjusted_config);
-                if (adjusted_checker.checkCollision(
-                        costmap, car_, makeRobotState(successor_pose)).in_collision) {
+                const bool in_collision = [&]() {
+                    common::ScopedProfilingTimer collision_timer(
+                        profiler,
+                        "planner.collision_check.primitive_adjusted_threshold");
+                    return adjusted_checker.checkCollision(
+                        costmap, car_, makeRobotState(successor_pose)).in_collision;
+                }();
+                if (in_collision) {
+                    if (debug_trace != nullptr) {
+                        primitive_event.outcome = "collision";
+                        primitive_event.detail = "collision_with_adjusted_threshold";
+                        recordPrimitiveEvent(std::move(primitive_event));
+                    }
                     return false;
                 }
             } else {
-                if (collision_checker.checkCollision(
-                        costmap, car_, makeRobotState(successor_pose)).in_collision) {
+                const bool in_collision = [&]() {
+                    common::ScopedProfilingTimer collision_timer(
+                        profiler,
+                        "planner.collision_check.primitive_default");
+                    return collision_checker.checkCollision(
+                        costmap, car_, makeRobotState(successor_pose)).in_collision;
+                }();
+                if (in_collision) {
+                    if (debug_trace != nullptr) {
+                        primitive_event.outcome = "collision";
+                        primitive_event.detail = "collision_with_default_threshold";
+                        recordPrimitiveEvent(std::move(primitive_event));
+                    }
                     return false;
                 }
             }
 
-            const double travel_m =
-                static_cast<double>(motion_table.getTravelCost(static_cast<unsigned int>(primitive_idx))) *
-                xy_resolution_m;
             const common::MotionDirection successor_motion =
                 motionDirectionForPrimitive(projection.turn_dir);
             if (!canChangeMotionDirection(current_node, successor_motion)) {
+                if (debug_trace != nullptr) {
+                    primitive_event.outcome = "motion_change_blocked";
+                    primitive_event.detail = "min_same_motion_length_not_satisfied";
+                    recordPrimitiveEvent(std::move(primitive_event));
+                }
                 return false;
             }
-            const double edge_cost = computeEdgeCost(
-                costmap,
-                *resolved.profile,
-                current_node,
-                successor_position,
-                successor_pose.theta.radians(),
-                projection.turn_dir,
-                travel_m);
+            const double edge_cost = [&]() {
+                common::ScopedProfilingTimer edge_cost_timer(
+                    profiler, "planner.edge_cost");
+                return computeEdgeCost(
+                    costmap,
+                    *resolved.profile,
+                    current_node,
+                    successor_position,
+                    successor_pose.theta.radians(),
+                    projection.turn_dir,
+                    travel_m);
+            }();
             const double new_g = current_node.g + edge_cost;
 
             const double successor_same_motion_length_m =
@@ -970,12 +1325,13 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     travel_m);
 
             const double holonomic_h =
-                computeHolonomicHeuristic(costmap, successor_position);
+                computeHolonomicHeuristic(costmap, successor_position, profiler);
             const double nh_h = computeNonHolonomicHeuristic(
                 heuristic,
                 selectHeuristicModel(resolved),
                 successor_pose,
-                request.goal);
+                request.goal,
+                profiler);
             const double successor_h = std::max(holonomic_h, nh_h);
 
             SearchNode successor_node;
@@ -1001,6 +1357,14 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 global_max_same_motion_length_m);
             const auto existing = best_g_by_key.find(successor_key);
             if (existing != best_g_by_key.end() && new_g >= existing->second - 1e-6) {
+                if (debug_trace != nullptr) {
+                    primitive_event.edge_cost = edge_cost;
+                    primitive_event.new_g = new_g;
+                    primitive_event.successor_h = successor_h;
+                    primitive_event.outcome = "dominated";
+                    primitive_event.detail = "existing_state_has_better_or_equal_cost";
+                    recordPrimitiveEvent(std::move(primitive_event));
+                }
                 return false;
             }
 
@@ -1013,22 +1377,52 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 insertion_order++,
                 successor_index
             });
+            debug_nodes_allocated = nodes.size();
+            debug_unique_state_count = best_g_by_key.size();
+            debug_open_queue_peak_size =
+                std::max(debug_open_queue_peak_size, open_queue.size());
+            if (debug_trace != nullptr) {
+                primitive_event.edge_cost = edge_cost;
+                primitive_event.new_g = new_g;
+                primitive_event.successor_h = successor_h;
+                primitive_event.outcome = "enqueued";
+                primitive_event.detail = "successor_added_to_open_queue";
+                recordPrimitiveEvent(std::move(primitive_event));
+            }
             return true;
         };
 
         if (lane_following_node &&
             forward_primitive_idx < projections.size() &&
             tryExpandPrimitive(forward_primitive_idx)) {
+            if (debug_trace != nullptr) {
+                ++debug_trace->lane_suppression_forward_only_applied;
+                expansion_debug.lane_suppression_forward_success = true;
+                debug_trace->expansions.push_back(std::move(expansion_debug));
+            }
             continue;
+        }
+
+        if (lane_following_node && forward_primitive_idx < projections.size()) {
+            if (debug_trace != nullptr) {
+                ++debug_trace->lane_suppression_fallbacks;
+                expansion_debug.lane_suppression_fallback = true;
+            }
         }
 
         for (size_t primitive_idx = 0; primitive_idx < projections.size(); ++primitive_idx) {
             tryExpandPrimitive(primitive_idx);
         }
+        if (debug_trace != nullptr) {
+            debug_trace->expansions.push_back(std::move(expansion_debug));
+        }
     }
 
-    failure_result.detail = "Hybrid A* exhausted the search space without finding a path.";
-    return failure_result;
+    if (debug_trace != nullptr) {
+        debug_trace->terminal_reason =
+            "Hybrid A* exhausted the search space without finding a path.";
+    }
+    return failWithDetail("Hybrid A* exhausted the search space without finding a path.");
 }
 
 HeuristicModel HybridAStarPlanner::selectHeuristicModel(

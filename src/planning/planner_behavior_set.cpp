@@ -13,11 +13,12 @@ PlannerBehaviorSet PlannerBehaviorSet::loadFromFile(const std::string& filepath)
     const std::filesystem::path behaviors_path(filepath);
     const std::filesystem::path master_params_path =
         behaviors_path.parent_path() / "master_params.yaml";
-    const auto profiles = config::PlannerBehaviorParser::parse(
+    const auto config_file = config::PlannerBehaviorParser::parse(
         master_params_path.string(), filepath);
 
     PlannerBehaviorSet behavior_set;
-    for (const auto& entry : profiles) {
+    behavior_set.global_config_ = config_file.global;
+    for (const auto& entry : config_file.profiles) {
         behavior_set.names_.push_back(entry.first);
         behavior_set.profiles_.emplace(entry.first, entry.second);
     }

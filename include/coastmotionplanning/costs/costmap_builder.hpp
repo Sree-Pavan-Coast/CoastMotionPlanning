@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <grid_map_core/grid_map_core.hpp>
+#include "coastmotionplanning/common/profiling.hpp"
 #include "coastmotionplanning/costs/costmap_types.hpp"
 #include "coastmotionplanning/costs/non_holonomic_heuristic.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
@@ -25,7 +26,8 @@ public:
     /// @param robot      Robot model (used for inscribed radius)
     CostmapBuilder(const CostmapConfig& config,
                    const std::vector<std::shared_ptr<zones::Zone>>& all_zones,
-                   const robot::RobotBase& robot);
+                   const robot::RobotBase& robot,
+                   common::ProfilingCollector* profiler = nullptr);
 
     /// Build the full costmap for a planning query.
     /// @param start  Start pose
@@ -51,6 +53,7 @@ private:
     CostmapConfig config_;
     std::vector<std::shared_ptr<zones::Zone>> all_zones_;
     const robot::RobotBase& robot_;
+    common::ProfilingCollector* profiler_{nullptr};
     NonHolonomicHeuristic nh_heuristic_;
     grid_map::GridMap costmap_;
 };

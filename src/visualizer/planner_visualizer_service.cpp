@@ -1,10 +1,13 @@
 #include "coastmotionplanning/visualizer/planner_visualizer_service.hpp"
 
+#include <chrono>
 #include <cmath>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
+#include <nlohmann/json.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include "coastmotionplanning/config/robots_parser.hpp"
@@ -18,10 +21,192 @@ namespace visualizer {
 
 namespace {
 
+using json = nlohmann::json;
+
 struct RobotCatalogData {
     std::unordered_map<std::string, config::CarDefinition> car_definitions;
     std::vector<RobotOptionDto> robots;
 };
+
+json poseToJson(const math::Pose2d& pose) {
+    return json{
+        {"x", pose.x},
+        {"y", pose.y},
+        {"heading_deg", pose.theta.normalized().degrees()}
+    };
+}
+
+json profilingScopesToJson(
+    const std::vector<common::ProfilingScopeSummary>& profiling_scopes) {
+    json scopes = json::array();
+    for (const auto& scope : profiling_scopes) {
+        scopes.push_back(json{
+            {"scope_name", scope.scope_name},
+            {"count", scope.count},
+            {"total_ms", scope.total_ms},
+            {"avg_ms", scope.avg_ms},
+            {"max_ms", scope.max_ms}
+        });
+    }
+    return scopes;
+}
+
+json profileToJson(const planning::PlannerBehaviorProfile& profile) {
+    return json{
+        {"planner", {
+            {"max_planning_time_ms", profile.planner.max_planning_time_ms},
+            {"xy_grid_resolution_m", profile.planner.xy_grid_resolution_m},
+            {"yaw_grid_resolution_deg", profile.planner.yaw_grid_resolution_deg},
+            {"step_size_m", profile.planner.step_size_m},
+            {"only_forward_path", profile.planner.only_forward_path},
+            {"weight_forward", profile.planner.weight_forward},
+            {"weight_reverse", profile.planner.weight_reverse},
+            {"weight_steer", profile.planner.weight_steer},
+            {"weight_steer_change", profile.planner.weight_steer_change},
+            {"weight_gear_change", profile.planner.weight_gear_change},
+            {"analytic_expansion_max_length_m", profile.planner.analytic_expansion_max_length_m},
+            {"analytic_expansion_ratio", profile.planner.analytic_expansion_ratio},
+            {"min_path_len_in_same_motion", profile.planner.min_path_len_in_same_motion},
+            {"analytic_shot", profile.planner.analytic_shot},
+            {"near_goal_analytic_expansion", profile.planner.near_goal_analytic_expansion},
+            {"near_goal_analytic_radius_m", profile.planner.near_goal_analytic_radius_m},
+            {"weight_lane_centerline", profile.planner.weight_lane_centerline},
+            {"lane_heading_bias_weight", profile.planner.lane_heading_bias_weight},
+            {"max_cross_track_error_m", profile.planner.max_cross_track_error_m},
+            {"lane_primitive_suppression", profile.planner.lane_primitive_suppression}
+        }},
+        {"costmap", {
+            {"resolution_m", profile.costmap.resolution_m},
+            {"inflation_radius_m", profile.costmap.inflation_radius_m},
+            {"inscribed_radius_m", profile.costmap.inscribed_radius_m},
+            {"cost_scaling_factor", profile.costmap.cost_scaling_factor},
+            {"alpha_shape_alpha", profile.costmap.alpha_shape_alpha},
+            {"max_lane_cost", profile.costmap.max_lane_cost},
+            {"max_lane_half_width_m", profile.costmap.max_lane_half_width_m}
+        }},
+        {"collision_checker", {
+            {"collision_mode", profile.collision_checker.collision_mode},
+            {"lethal_threshold", profile.collision_checker.lethal_threshold},
+            {"margin_m", profile.collision_checker.margin_m}
+        }},
+        {"motion_primitives", {
+            {"num_angle_bins", profile.motion_primitives.num_angle_bins},
+            {"min_turning_radius_m", profile.motion_primitives.min_turning_radius_m},
+            {"max_steer_angle_rad", profile.motion_primitives.max_steer_angle_rad}
+        }},
+        {"non_holonomic_heuristic", {
+            {"lut_grid_size", profile.non_holonomic_heuristic.lut_grid_size},
+            {"lut_cell_size_m", profile.non_holonomic_heuristic.lut_cell_size_m},
+            {"hitch_angle_penalty_factor", profile.non_holonomic_heuristic.hitch_angle_penalty_factor}
+        }},
+        {"active_layers", std::vector<std::string>(
+            profile.active_layers.begin(), profile.active_layers.end())}
+    };
+}
+
+json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace) {
+    json expansions = json::array();
+    for (const auto& expansion : trace.expansions) {
+        json primitive_events = json::array();
+        for (const auto& primitive_event : expansion.primitive_events) {
+            primitive_events.push_back(json{
+                {"primitive_index", primitive_event.primitive_index},
+                {"turn_direction", primitive_event.turn_direction},
+                {"successor_pose", poseToJson(primitive_event.successor_pose)},
+                {"outcome", primitive_event.outcome},
+                {"detail", primitive_event.detail},
+                {"resolved_behavior_name", primitive_event.resolved_behavior_name},
+                {"resolved_zone_name", primitive_event.resolved_zone_name},
+                {"travel_m", primitive_event.travel_m},
+                {"edge_cost", primitive_event.edge_cost},
+                {"new_g", primitive_event.new_g},
+                {"successor_h", primitive_event.successor_h}
+            });
+        }
+
+        expansions.push_back(json{
+            {"expansion_index", expansion.expansion_index},
+            {"node_index", expansion.node_index},
+            {"pose", poseToJson(expansion.pose)},
+            {"zone_name", expansion.zone_name},
+            {"behavior_name", expansion.behavior_name},
+            {"g", expansion.g},
+            {"h", expansion.h},
+            {"f", expansion.f},
+            {"distance_to_goal_m", expansion.distance_to_goal_m},
+            {"open_queue_size_after_pop", expansion.open_queue_size_after_pop},
+            {"goal_satisfied", expansion.goal_satisfied},
+            {"terminal_motion_valid", expansion.terminal_motion_valid},
+            {"lane_following_candidate", expansion.lane_following_candidate},
+            {"lane_suppression_forward_success", expansion.lane_suppression_forward_success},
+            {"lane_suppression_fallback", expansion.lane_suppression_fallback},
+            {"analytic_attempted", expansion.analytic_attempted},
+            {"analytic_event", {
+                {"attempted", expansion.analytic_event.attempted},
+                {"trigger", expansion.analytic_event.trigger},
+                {"distance_to_goal_m", expansion.analytic_event.distance_to_goal_m},
+                {"path_length_m", expansion.analytic_event.path_length_m},
+                {"waypoint_count", expansion.analytic_event.waypoint_count},
+                {"outcome", expansion.analytic_event.outcome},
+                {"detail", expansion.analytic_event.detail}
+            }},
+            {"primitive_events", primitive_events}
+        });
+    }
+
+    return json{
+        {"initial_behavior_name", trace.initial_behavior_name},
+        {"start_zone_name", trace.start_zone_name},
+        {"goal_zone_name", trace.goal_zone_name},
+        {"selected_zone_names", trace.selected_zone_names},
+        {"timing_ms", {
+            {"zone_selection", trace.zone_selection_ms},
+            {"costmap_build", trace.costmap_build_ms},
+            {"heuristic_setup", trace.heuristic_setup_ms},
+            {"search_loop", trace.search_loop_ms},
+            {"total_planning", trace.total_planning_ms}
+        }},
+        {"search_summary", {
+            {"nodes_allocated", trace.nodes_allocated},
+            {"unique_state_count", trace.unique_state_count},
+            {"open_queue_peak_size", trace.open_queue_peak_size},
+            {"expansions_popped", trace.expansions_popped},
+            {"stale_entries_skipped", trace.stale_entries_skipped},
+            {"goal_checks", trace.goal_checks},
+            {"goal_hits", trace.goal_hits}
+        }},
+        {"lane_summary", {
+            {"lane_following_candidates", trace.lane_following_candidates},
+            {"lane_suppression_forward_only_applied", trace.lane_suppression_forward_only_applied},
+            {"lane_suppression_fallbacks", trace.lane_suppression_fallbacks}
+        }},
+        {"analytic_summary", {
+            {"attempts", trace.analytic_attempts},
+            {"successes", trace.analytic_successes},
+            {"fail_no_ompl", trace.analytic_fail_no_ompl},
+            {"fail_same_motion_guard", trace.analytic_fail_same_motion_guard},
+            {"fail_path_length", trace.analytic_fail_path_length},
+            {"fail_out_of_bounds", trace.analytic_fail_out_of_bounds},
+            {"fail_collision", trace.analytic_fail_collision},
+            {"fail_validation", trace.analytic_fail_validation}
+        }},
+        {"primitive_summary", {
+            {"out_of_bounds", trace.primitive_out_of_bounds},
+            {"cross_track_pruned", trace.primitive_cross_track_pruned},
+            {"behavior_unresolved", trace.primitive_behavior_unresolved},
+            {"primitive_disallowed", trace.primitive_disallowed},
+            {"collision", trace.primitive_collision},
+            {"motion_change_blocked", trace.primitive_motion_change_blocked},
+            {"dominated", trace.primitive_dominated},
+            {"enqueued", trace.primitive_enqueued}
+        }},
+        {"profiling", {
+            {"scopes", profilingScopesToJson(trace.profiling_scopes)}
+        }},
+        {"terminal_reason", trace.terminal_reason},
+        {"expansions", expansions}
+    };
+}
 
 std::filesystem::path requireConfigPath(const std::filesystem::path& configs_root,
                                         const std::string& filename) {
@@ -237,7 +422,13 @@ PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
         throw std::runtime_error("Goal pose is not inside any map zone.");
     }
 
+    struct AttemptRecord {
+        planning::PlanningAttempt attempt;
+        planning::HybridAStarPlannerResult result;
+    };
+
     planning::HybridAStarPlannerResult last_planner_result;
+    std::vector<AttemptRecord> attempt_records;
     auto runner = [&](const planning::PlanningAttempt& attempt) {
         planning::HybridAStarPlanner planner(car, loaded_map->zones, behavior_set);
         planning::HybridAStarPlannerRequest planner_request;
@@ -246,6 +437,7 @@ PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
         planner_request.initial_behavior_name = attempt.profile;
 
         last_planner_result = planner.plan(planner_request);
+        attempt_records.push_back(AttemptRecord{attempt, last_planner_result});
         return planning::PlannerRunResult{
             last_planner_result.success,
             last_planner_result.detail
@@ -273,6 +465,7 @@ PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
             goal_zone);
     response.selected_profile = orchestration_result.selected_profile;
     response.attempted_profiles = orchestration_result.attempted_profiles;
+    response.debug_mode = behavior_set.debugModeEnabled();
 
     if (orchestration_result.success && last_planner_result.success) {
         response.path.reserve(last_planner_result.poses.size());
@@ -283,6 +476,143 @@ PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
         response.segment_directions.reserve(last_planner_result.segment_directions.size());
         for (const auto direction : last_planner_result.segment_directions) {
             response.segment_directions.push_back(motionDirectionToString(direction));
+        }
+    }
+
+    if (response.debug_mode) {
+        try {
+            const auto sanitize = [](std::string value) {
+                for (char& ch : value) {
+                    const bool keep =
+                        (ch >= 'a' && ch <= 'z') ||
+                        (ch >= 'A' && ch <= 'Z') ||
+                        (ch >= '0' && ch <= '9') ||
+                        ch == '_' || ch == '-';
+                    if (!keep) {
+                        ch = '_';
+                    }
+                }
+                return value;
+            };
+
+            json attempts = json::array();
+            for (const auto& record : attempt_records) {
+                json path_json = json::array();
+                for (const auto& pose : record.result.poses) {
+                    path_json.push_back(poseToJson(pose));
+                }
+
+                json segment_dirs = json::array();
+                for (const auto direction : record.result.segment_directions) {
+                    segment_dirs.push_back(motionDirectionToString(direction));
+                }
+
+                json attempt_json{
+                    {"attempt_index", record.attempt.attempt_index},
+                    {"profile", record.attempt.profile},
+                    {"result", {
+                        {"success", record.result.success},
+                        {"detail", record.result.detail},
+                        {"path", path_json},
+                        {"behavior_sequence", record.result.behavior_sequence},
+                        {"segment_directions", segment_dirs}
+                    }}
+                };
+                if (behavior_set.contains(record.attempt.profile)) {
+                    attempt_json["profile_config"] =
+                        profileToJson(behavior_set.get(record.attempt.profile));
+                }
+                if (record.result.debug_trace != nullptr) {
+                    attempt_json["debug_trace"] =
+                        plannerDebugTraceToJson(*record.result.debug_trace);
+                    attempt_json["profiling"] = json{
+                        {"scopes", profilingScopesToJson(
+                            record.result.debug_trace->profiling_scopes)}
+                    };
+                } else {
+                    attempt_json["debug_trace"] = json(nullptr);
+                    attempt_json["profiling"] = json(nullptr);
+                }
+                attempts.push_back(std::move(attempt_json));
+            }
+
+            json final_path = json::array();
+            for (const auto& pose : response.path) {
+                final_path.push_back(json{
+                    {"x", pose.x},
+                    {"y", pose.y},
+                    {"heading_deg", pose.heading_deg}
+                });
+            }
+
+            json report{
+                {"request", {
+                    {"map_id", request.map_id},
+                    {"map_name", loaded_map->response.map_name},
+                    {"robot_name", selected_robot_name},
+                    {"start", poseToJson(start_pose)},
+                    {"goal", poseToJson(goal_pose)},
+                    {"start_zone", {
+                        {"name", start_zone->getName().value_or(zoneTypeName(start_zone))},
+                        {"type", zoneTypeName(start_zone)},
+                        {"planner_behavior", start_zone->getResolvedPlannerBehavior()}
+                    }},
+                    {"goal_zone", {
+                        {"name", goal_zone->getName().value_or(zoneTypeName(goal_zone))},
+                        {"type", zoneTypeName(goal_zone)},
+                        {"planner_behavior", goal_zone->getResolvedPlannerBehavior()}
+                    }}
+                }},
+                {"vehicle", {
+                    {"name", car_definition.name},
+                    {"wheelbase_m", car_definition.wheelbase_m},
+                    {"front_overhang_m", car_definition.front_overhang_m},
+                    {"rear_overhang_m", car_definition.rear_overhang_m},
+                    {"width_m", car_definition.width_m},
+                    {"min_turning_radius_m", car_definition.minTurningRadiusMeters()},
+                    {"max_steer_angle_rad", car_definition.maxSteerAngleRadians()}
+                }},
+                {"global", {
+                    {"debug_mode", true}
+                }},
+                {"orchestration", {
+                    {"success", orchestration_result.success},
+                    {"preferred_profile", orchestration_result.preferred_profile},
+                    {"selected_profile", orchestration_result.selected_profile},
+                    {"detail", response.detail},
+                    {"attempted_profiles", orchestration_result.attempted_profiles}
+                }},
+                {"final_result", {
+                    {"success", response.success},
+                    {"selected_profile", response.selected_profile},
+                    {"detail", response.detail},
+                    {"behavior_sequence", response.behavior_sequence},
+                    {"segment_directions", response.segment_directions},
+                    {"path", final_path}
+                }},
+                {"attempts", attempts}
+            };
+
+            const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const std::filesystem::path report_dir =
+                config_.configs_root.parent_path() / "planner_debug_reports";
+            std::filesystem::create_directories(report_dir);
+            const std::filesystem::path report_path =
+                report_dir /
+                ("planner_debug_" + std::to_string(now_ms) + "_" +
+                 sanitize(loaded_map->response.map_name) + "_" +
+                 sanitize(selected_robot_name) + ".json");
+
+            std::ofstream report_stream(report_path);
+            if (!report_stream.is_open()) {
+                throw std::runtime_error(
+                    "Unable to open debug report file: " + report_path.string());
+            }
+            report_stream << report.dump(2);
+            response.debug_report_path = report_path.string();
+        } catch (const std::exception& e) {
+            response.detail += " Debug report write failed: " + std::string(e.what());
         }
     }
 

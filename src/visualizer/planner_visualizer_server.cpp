@@ -132,7 +132,9 @@ json planResponseToJson(const PlanResponse& response) {
         {"attempted_profiles", response.attempted_profiles},
         {"path", path},
         {"behavior_sequence", response.behavior_sequence},
-        {"segment_directions", response.segment_directions}
+        {"segment_directions", response.segment_directions},
+        {"debug_mode", response.debug_mode},
+        {"debug_report_path", response.debug_report_path}
     };
 }
 

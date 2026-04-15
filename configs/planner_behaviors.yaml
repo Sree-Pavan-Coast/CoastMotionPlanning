@@ -16,6 +16,9 @@
 # Note: The planner consults active_layers when applying cost terms.
 #       The builder still constructs its standard layers unconditionally.
 
+global:
+  debug_mode: false
+
 behaviors:
   # The strict, optimal primary planner profile
   primary_profile:
@@ -24,7 +27,7 @@ behaviors:
       xy_grid_resolution_m: 0.1
       yaw_grid_resolution_deg: 5.0
       step_size_m: 0.5
-      only_forward_path: false
+      only_forward_path: true
       weight_forward: 1.0
       weight_reverse: 2.5
       weight_steer: 0.5
@@ -32,7 +35,7 @@ behaviors:
       weight_gear_change: 4.0
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
-      min_path_len_in_same_motion: 3.0
+      min_path_len_in_same_motion: 5.0
       analytic_shot: true
       near_goal_analytic_expansion: true
       near_goal_analytic_radius_m: 3.0
@@ -73,7 +76,7 @@ behaviors:
       xy_grid_resolution_m: 0.1
       yaw_grid_resolution_deg: 5.0
       step_size_m: 1.0
-      only_forward_path: false
+      only_forward_path: true
       weight_forward: 1.0
       weight_reverse: 1.0
       weight_steer: 0.5
@@ -81,7 +84,7 @@ behaviors:
       weight_gear_change: 2.0
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
-      min_path_len_in_same_motion: 1.0
+      min_path_len_in_same_motion: 2.0
       analytic_shot: true
       near_goal_analytic_expansion: false
       near_goal_analytic_radius_m: 0.0

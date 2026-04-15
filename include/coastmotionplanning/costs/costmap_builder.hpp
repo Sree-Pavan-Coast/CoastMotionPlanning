@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +17,16 @@ namespace coastmotionplanning {
 namespace costs {
 
 struct ZoneSelectionResult;
+
+struct StageHeuristicLayerSummary {
+    size_t source_frontier_id{0};
+    size_t target_frontier_id{0};
+    std::string layer_name;
+    size_t seed_cell_count{0};
+    size_t finite_cell_count{0};
+    double min_finite_value{std::numeric_limits<double>::quiet_NaN()};
+    double max_finite_value{std::numeric_limits<double>::quiet_NaN()};
+};
 
 /// Orchestrates the building of all costmap layers for a single planning query.
 /// Call build() once per planning iteration with the current start/goal.
@@ -49,6 +60,12 @@ public:
     /// Access the last-built costmap
     const grid_map::GridMap& getCostmap() const { return costmap_; }
 
+    /// Access attempt-scoped frontier-stage heuristic layer summaries.
+    const std::vector<StageHeuristicLayerSummary>&
+    getStageHeuristicLayerSummaries() const {
+        return stage_heuristic_layer_summaries_;
+    }
+
 private:
     CostmapConfig config_;
     std::vector<std::shared_ptr<zones::Zone>> all_zones_;
@@ -56,6 +73,7 @@ private:
     common::ProfilingCollector* profiler_{nullptr};
     NonHolonomicHeuristic nh_heuristic_;
     grid_map::GridMap costmap_;
+    std::vector<StageHeuristicLayerSummary> stage_heuristic_layer_summaries_;
 };
 
 } // namespace costs

@@ -223,6 +223,8 @@ planning::PlannerBehaviorProfile PlannerBehaviorParser::parseProfile(
         planner["near_goal_analytic_expansion"].as<bool>();
     profile.planner.near_goal_analytic_radius_m =
         planner["near_goal_analytic_radius_m"].as<double>();
+    profile.planner.goal_approach_straight_distance_m =
+        planner["goal_approach_straight_distance_m"].as<double>();
     profile.planner.weight_lane_centerline =
         planner["weight_lane_centerline"].as<double>();
     profile.planner.lane_heading_bias_weight =

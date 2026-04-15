@@ -39,6 +39,7 @@ behaviors:
       analytic_shot: true
       near_goal_analytic_expansion: true
       near_goal_analytic_radius_m: 3.0
+      goal_approach_straight_distance_m: 2.0
       weight_lane_centerline: 1.0
       lane_heading_bias_weight: 0.0
       max_cross_track_error_m: 0.0
@@ -88,6 +89,7 @@ behaviors:
       analytic_shot: true
       near_goal_analytic_expansion: false
       near_goal_analytic_radius_m: 0.0
+      goal_approach_straight_distance_m: 2.0
       weight_lane_centerline: 1.0
       lane_heading_bias_weight: 0.0
       max_cross_track_error_m: 0.0
@@ -135,6 +137,7 @@ behaviors:
       analytic_shot: true
       near_goal_analytic_expansion: true
       near_goal_analytic_radius_m: 8.0
+      goal_approach_straight_distance_m: 2.0
       weight_lane_centerline: 1.5
       lane_heading_bias_weight: 0.5
       max_cross_track_error_m: 0.0
@@ -183,6 +186,7 @@ behaviors:
       analytic_shot: true
       near_goal_analytic_expansion: false
       near_goal_analytic_radius_m: 0.0
+      goal_approach_straight_distance_m: 2.0
       weight_lane_centerline: 1.0
       lane_heading_bias_weight: 0.0
       max_cross_track_error_m: 0.0
@@ -231,6 +235,7 @@ behaviors:
       analytic_shot: false
       near_goal_analytic_expansion: true
       near_goal_analytic_radius_m: 5.0
+      goal_approach_straight_distance_m: 2.0
       weight_lane_centerline: 3.0
       lane_heading_bias_weight: 2.0
       max_cross_track_error_m: 0.0

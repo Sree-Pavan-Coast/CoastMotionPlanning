@@ -57,6 +57,7 @@ grid_map::GridMap CostmapBuilder::build(const math::Pose2d& start,
 grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
                                         const math::Pose2d& goal) {
     auto t = Clock::now();
+    stage_heuristic_layer_summaries_.clear();
 
     // ---- Step 2: Create GridMap with geometry matching the search boundary ----
     // Compute bounding box of the search boundary
@@ -111,28 +112,68 @@ grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
                                 config_.max_lane_cost, config_.max_lane_half_width);
     recordTiming("costmap.lane_centerline_layer", t, profiler_);
 
-    // ---- Step 7: Holonomic-with-Obstacles Heuristic ----
+    // ---- Step 7: Frontier-Stage Holonomic Heuristics ----
+    t = Clock::now();
+    const auto& zone_constraints = costmap_[CostmapLayerNames::ZONE_CONSTRAINTS];
+    const int rows = costmap_.getSize()(0);
+    const int cols = costmap_.getSize()(1);
+    for (const auto& frontier : selection.frontiers) {
+        if (!frontier.next_frontier_id.has_value()) {
+            continue;
+        }
+
+        std::vector<grid_map::Index> seed_indices;
+        seed_indices.reserve(rows * cols / 4);
+        const float target_frontier_value =
+            static_cast<float>(frontier.next_frontier_id.value());
+        for (int r = 0; r < rows; ++r) {
+            for (int c = 0; c < cols; ++c) {
+                if (std::abs(zone_constraints(r, c) - target_frontier_value) >= 0.5f) {
+                    continue;
+                }
+                grid_map::Index seed_idx;
+                seed_idx << r, c;
+                seed_indices.push_back(seed_idx);
+            }
+        }
+
+        const std::string layer_name = HolonomicObstaclesHeuristic::makeStageLayerName(
+            frontier.frontier_id,
+            frontier.next_frontier_id.value());
+        const HolonomicHeuristicLayerStats stage_stats =
+            HolonomicObstaclesHeuristic::computeFromSeedCells(
+                costmap_, layer_name, seed_indices);
+        stage_heuristic_layer_summaries_.push_back(StageHeuristicLayerSummary{
+            frontier.frontier_id,
+            frontier.next_frontier_id.value(),
+            layer_name,
+            stage_stats.seed_cell_count,
+            stage_stats.finite_cell_count,
+            stage_stats.min_finite_value,
+            stage_stats.max_finite_value
+        });
+    }
+    recordTiming("costmap.stage_holonomic_heuristic_layers", t, profiler_);
+
+    // ---- Step 8: Holonomic-with-Obstacles Heuristic ----
     t = Clock::now();
     grid_map::Position goal_pos(goal.x, goal.y);
     HolonomicObstaclesHeuristic::compute(costmap_, goal_pos);
     recordTiming("costmap.holonomic_heuristic_layer", t, profiler_);
 
-    // ---- Step 8: Combined Cost ----
+    // ---- Step 9: Combined Cost ----
     t = Clock::now();
     costmap_.add(CostmapLayerNames::COMBINED_COST, 0.0f);
     auto& combined = costmap_[CostmapLayerNames::COMBINED_COST];
     const auto& obstacles = costmap_[CostmapLayerNames::STATIC_OBSTACLES];
     const auto& inflation = costmap_[CostmapLayerNames::INFLATION];
-    const auto& zone_con = costmap_[CostmapLayerNames::ZONE_CONSTRAINTS];
     const auto& lane = costmap_[CostmapLayerNames::LANE_CENTERLINE_COST];
 
     // combined = max(static_obstacles, zone_out_of_bounds) + inflation + lane
-    const int rows = costmap_.getSize()(0);
-    const int cols = costmap_.getSize()(1);
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
             float obs = obstacles(r, c);
-            float zc = zone_con(r, c);
+            float zc = zone_constraints(r, c);
             // Zone ZONE_NONE is treated as lethal (outside all operational zones)
             float zone_lethal = (zc >= ZoneConstraintValues::ZONE_NONE)
                                     ? CostValues::LETHAL : 0.0f;

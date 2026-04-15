@@ -138,10 +138,11 @@ TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
 
     EXPECT_EQ(primary.planner.max_planning_time_ms, 2000);
     EXPECT_DOUBLE_EQ(primary.planner.step_size_m, 0.5);
-    EXPECT_TRUE(primary.planner.only_forward_path);
+    EXPECT_FALSE(primary.planner.only_forward_path);
     EXPECT_DOUBLE_EQ(primary.planner.weight_gear_change, 4.0);
-    EXPECT_DOUBLE_EQ(primary.planner.min_path_len_in_same_motion, 5.0);
+    EXPECT_DOUBLE_EQ(primary.planner.min_path_len_in_same_motion, 3.0);
     EXPECT_TRUE(primary.planner.analytic_shot);
+    EXPECT_DOUBLE_EQ(primary.planner.goal_approach_straight_distance_m, 2.0);
     EXPECT_DOUBLE_EQ(primary.planner.weight_lane_centerline, 1.0);
     EXPECT_DOUBLE_EQ(primary.costmap.resolution_m, 0.1);
     EXPECT_EQ(primary.motion_primitives.num_angle_bins, 72);
@@ -155,12 +156,14 @@ TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
     EXPECT_FALSE(parking.planner.only_forward_path);
     EXPECT_DOUBLE_EQ(parking.planner.weight_gear_change, 1.0);
     EXPECT_DOUBLE_EQ(parking.planner.min_path_len_in_same_motion, 0.5);
+    EXPECT_DOUBLE_EQ(parking.planner.goal_approach_straight_distance_m, 2.0);
     EXPECT_EQ(parking.motion_primitives.num_angle_bins, 144);
     EXPECT_TRUE(parking.isLayerActive("inflation"));
     EXPECT_FALSE(parking.isLayerActive("lane_centerline_cost"));
 
     const auto& track = behavior_set.get("track_main_road_profile");
     EXPECT_FALSE(track.planner.analytic_shot);
+    EXPECT_DOUBLE_EQ(track.planner.goal_approach_straight_distance_m, 2.0);
     EXPECT_DOUBLE_EQ(track.planner.weight_lane_centerline, 3.0);
     EXPECT_DOUBLE_EQ(track.planner.lane_heading_bias_weight, 2.0);
     EXPECT_TRUE(track.planner.lane_primitive_suppression);

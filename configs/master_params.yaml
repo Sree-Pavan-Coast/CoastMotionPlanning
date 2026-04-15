@@ -22,6 +22,7 @@ planner:
   analytic_shot: true                # enable/disable analytic expansion
   near_goal_analytic_expansion: false # allow analytic expansion when close to the goal
   near_goal_analytic_radius_m: 0.0    # distance threshold for near-goal analytic shots
+  goal_approach_straight_distance_m: 0.0 # prefer straight travel in the final N meters before goal
   weight_lane_centerline: 1.0        # multiplier on lane_centerline_cost in edge computation
   lane_heading_bias_weight: 0.0      # cost per radian of deviation from lane heading
   max_cross_track_error_m: 0.0       # hard prune beyond this lane distance (0 = disabled)

@@ -70,6 +70,8 @@ json profileToJson(const planning::PlannerBehaviorProfile& profile) {
             {"analytic_shot", profile.planner.analytic_shot},
             {"near_goal_analytic_expansion", profile.planner.near_goal_analytic_expansion},
             {"near_goal_analytic_radius_m", profile.planner.near_goal_analytic_radius_m},
+            {"goal_approach_straight_distance_m",
+             profile.planner.goal_approach_straight_distance_m},
             {"weight_lane_centerline", profile.planner.weight_lane_centerline},
             {"lane_heading_bias_weight", profile.planner.lane_heading_bias_weight},
             {"max_cross_track_error_m", profile.planner.max_cross_track_error_m},
@@ -133,6 +135,19 @@ json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace
         });
     }
 
+    json stage_heuristic_layers = json::array();
+    for (const auto& stage_layer : trace.stage_heuristic_layers) {
+        stage_heuristic_layers.push_back(json{
+            {"source_frontier_id", stage_layer.source_frontier_id},
+            {"target_frontier_id", stage_layer.target_frontier_id},
+            {"layer_name", stage_layer.layer_name},
+            {"seed_cell_count", stage_layer.seed_cell_count},
+            {"finite_cell_count", stage_layer.finite_cell_count},
+            {"min_finite_value", stage_layer.min_finite_value},
+            {"max_finite_value", stage_layer.max_finite_value}
+        });
+    }
+
     json expansions = json::array();
     for (const auto& expansion : trace.expansions) {
         json primitive_events = json::array();
@@ -164,6 +179,10 @@ json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace
             {"h", expansion.h},
             {"f", expansion.f},
             {"distance_to_goal_m", expansion.distance_to_goal_m},
+            {"heuristic_mode", expansion.heuristic_mode},
+            {"stage_heuristic_value", expansion.stage_heuristic_value},
+            {"final_goal_holonomic_value", expansion.final_goal_holonomic_value},
+            {"nonholonomic_heuristic_value", expansion.nonholonomic_heuristic_value},
             {"open_queue_size_after_pop", expansion.open_queue_size_after_pop},
             {"goal_satisfied", expansion.goal_satisfied},
             {"terminal_motion_valid", expansion.terminal_motion_valid},
@@ -236,6 +255,7 @@ json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace
         }},
         {"frontier_summaries", frontier_summaries},
         {"frontier_handoffs", frontier_handoffs},
+        {"stage_heuristic_layers", stage_heuristic_layers},
         {"terminal_reason", trace.terminal_reason},
         {"expansions", expansions}
     };

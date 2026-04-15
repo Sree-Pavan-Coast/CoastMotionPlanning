@@ -48,12 +48,18 @@ using motion_primitives::TurnDirection;
 
 constexpr double LARGE_COST = 1e9;
 constexpr double MOTION_EPSILON = 1e-6;
+constexpr double GOAL_APPROACH_TURNING_PENALTY_PER_M = 5.0;
 
 enum class TurnClass {
     UNKNOWN = 0,
     STRAIGHT,
     LEFT,
     RIGHT
+};
+
+enum class FrontierHeuristicMode {
+    FinalGoal = 0,
+    StageFrontier
 };
 
 struct SearchNode {
@@ -70,6 +76,10 @@ struct SearchNode {
     common::MotionDirection inbound_motion{common::MotionDirection::Forward};
     double same_motion_length_m{0.0};
     double same_motion_remaining_to_change_m{0.0};
+    FrontierHeuristicMode heuristic_mode{FrontierHeuristicMode::FinalGoal};
+    double stage_heuristic_value{std::numeric_limits<double>::quiet_NaN()};
+    double final_goal_holonomic_value{std::numeric_limits<double>::quiet_NaN()};
+    double nonholonomic_heuristic_value{std::numeric_limits<double>::quiet_NaN()};
 };
 
 struct DiscreteStateKey {
@@ -128,6 +138,7 @@ struct OpenEntry {
 
 struct AnalyticPathValidationResult {
     bool valid{false};
+    std::string detail;
     std::vector<common::MotionDirection> segment_directions;
 };
 
@@ -172,6 +183,7 @@ struct FrontierCounters {
 struct FrontierRuntime {
     costs::SearchFrontierDescriptor descriptor;
     const SearchContext* context{nullptr};
+    std::string stage_heuristic_layer_name;
     mutable std::mutex mutex;
     std::priority_queue<OpenEntry, std::vector<OpenEntry>, std::greater<OpenEntry>> open_queue;
     std::unordered_map<DiscreteStateKey, double, DiscreteStateKeyHash> best_g_by_key;
@@ -184,6 +196,14 @@ struct FrontierRuntime {
 struct SharedPlannerResult {
     HybridAStarPlannerResult result;
     bool published{false};
+};
+
+struct FrontierHeuristicEvaluation {
+    FrontierHeuristicMode mode{FrontierHeuristicMode::FinalGoal};
+    double combined_h{LARGE_COST};
+    double stage_heuristic_value{std::numeric_limits<double>::quiet_NaN()};
+    double final_goal_holonomic_value{std::numeric_limits<double>::quiet_NaN()};
+    double nonholonomic_heuristic_value{std::numeric_limits<double>::quiet_NaN()};
 };
 
 bool canChangeMotionDirection(const SearchNode& node,
@@ -326,6 +346,16 @@ std::string frontierRoleName(costs::SearchFrontierRole role) {
     return "frontier";
 }
 
+std::string frontierHeuristicModeName(FrontierHeuristicMode mode) {
+    switch (mode) {
+    case FrontierHeuristicMode::StageFrontier:
+        return "stage_frontier";
+    case FrontierHeuristicMode::FinalGoal:
+        return "final_goal";
+    }
+    return "final_goal";
+}
+
 std::string turnDirectionName(TurnDirection turn_direction) {
     switch (turn_direction) {
     case TurnDirection::FORWARD:
@@ -372,23 +402,33 @@ double readRawLayerValue(const grid_map::GridMap& costmap,
         layer, position, grid_map::InterpolationMethods::INTER_NEAREST));
 }
 
-double computeHolonomicHeuristic(const grid_map::GridMap& costmap,
-                                 const grid_map::Position& position,
-                                 common::ProfilingCollector* profiler = nullptr) {
+double readHolonomicLayerValue(const grid_map::GridMap& costmap,
+                               const std::string& layer_name,
+                               const grid_map::Position& position,
+                               common::ProfilingCollector* profiler = nullptr) {
     common::ScopedProfilingTimer timer(profiler, "planner.holonomic_heuristic_read");
-    if (!costmap.exists(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES) ||
-        !costmap.isInside(position)) {
-        return LARGE_COST;
-    }
+    return readRawLayerValue(costmap, layer_name, position);
+}
 
-    const float value = costmap.atPosition(
-        costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES,
-        position,
-        grid_map::InterpolationMethods::INTER_NEAREST);
+double computeHolonomicLayerHeuristic(const grid_map::GridMap& costmap,
+                                      const std::string& layer_name,
+                                      const grid_map::Position& position,
+                                      common::ProfilingCollector* profiler = nullptr) {
+    const double value = readHolonomicLayerValue(costmap, layer_name, position, profiler);
     if (std::isnan(value)) {
         return LARGE_COST;
     }
-    return static_cast<double>(value);
+    return value;
+}
+
+double computeHolonomicHeuristic(const grid_map::GridMap& costmap,
+                                 const grid_map::Position& position,
+                                 common::ProfilingCollector* profiler = nullptr) {
+    return computeHolonomicLayerHeuristic(
+        costmap,
+        costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES,
+        position,
+        profiler);
 }
 
 double computeNonHolonomicHeuristic(const DualModelNonHolonomicHeuristic& heuristic,
@@ -411,6 +451,104 @@ double computeNonHolonomicHeuristic(const DualModelNonHolonomicHeuristic& heuris
         static_cast<float>(rel_x),
         static_cast<float>(rel_y),
         static_cast<float>(rel_theta));
+}
+
+FrontierHeuristicEvaluation computeFrontierHeuristic(
+    const grid_map::GridMap& costmap,
+    const FrontierRuntime& frontier,
+    const DualModelNonHolonomicHeuristic& heuristic,
+    HeuristicModel final_goal_model,
+    const math::Pose2d& from,
+    const math::Pose2d& goal,
+    common::ProfilingCollector* profiler = nullptr) {
+    FrontierHeuristicEvaluation result;
+    const grid_map::Position position(from.x, from.y);
+
+    if (!frontier.stage_heuristic_layer_name.empty()) {
+        result.stage_heuristic_value = readHolonomicLayerValue(
+            costmap,
+            frontier.stage_heuristic_layer_name,
+            position,
+            profiler);
+        if (!std::isnan(result.stage_heuristic_value)) {
+            result.mode = FrontierHeuristicMode::StageFrontier;
+            result.combined_h = result.stage_heuristic_value;
+            return result;
+        }
+    }
+
+    result.final_goal_holonomic_value =
+        computeHolonomicHeuristic(costmap, position, profiler);
+    result.nonholonomic_heuristic_value = computeNonHolonomicHeuristic(
+        heuristic,
+        final_goal_model,
+        from,
+        goal,
+        profiler);
+    result.combined_h = std::max(
+        result.final_goal_holonomic_value,
+        result.nonholonomic_heuristic_value);
+    return result;
+}
+
+double computeGoalApproachStraightPenalty(const PlannerBehaviorProfile& profile,
+                                          const math::Pose2d& successor_pose,
+                                          const math::Pose2d& goal,
+                                          TurnDirection turn_direction,
+                                          double travel_m) {
+    if (profile.planner.goal_approach_straight_distance_m <= MOTION_EPSILON) {
+        return 0.0;
+    }
+
+    const TurnClass turn_class = classifyTurn(turn_direction);
+    if (turn_class != TurnClass::LEFT && turn_class != TurnClass::RIGHT) {
+        return 0.0;
+    }
+
+    const double distance_to_goal = std::hypot(
+        goal.x - successor_pose.x,
+        goal.y - successor_pose.y);
+    if (distance_to_goal > profile.planner.goal_approach_straight_distance_m) {
+        return 0.0;
+    }
+
+    return GOAL_APPROACH_TURNING_PENALTY_PER_M * travel_m;
+}
+
+bool analyticGoalApproachIsStraightEnough(
+    const std::vector<std::array<double, 3>>& waypoints,
+    double goal_approach_straight_distance_m,
+    double yaw_bin_size_rad) {
+    if (goal_approach_straight_distance_m <= MOTION_EPSILON) {
+        return true;
+    }
+
+    double remaining_suffix_m = goal_approach_straight_distance_m;
+    const double goal_heading_rad = waypoints.back()[2];
+    for (size_t i = waypoints.size() - 1; i > 0 && remaining_suffix_m > MOTION_EPSILON; --i) {
+        const auto& from = waypoints[i - 1];
+        const auto& to = waypoints[i];
+        const double segment_length_m = std::hypot(to[0] - from[0], to[1] - from[1]);
+        if (segment_length_m <= MOTION_EPSILON) {
+            continue;
+        }
+
+        const double from_goal_heading_delta =
+            std::abs(normalizeAngleSigned(from[2] - goal_heading_rad));
+        const double to_goal_heading_delta =
+            std::abs(normalizeAngleSigned(to[2] - goal_heading_rad));
+        const double heading_delta =
+            std::abs(normalizeAngleSigned(to[2] - from[2]));
+        if (from_goal_heading_delta > yaw_bin_size_rad ||
+            to_goal_heading_delta > yaw_bin_size_rad ||
+            heading_delta > yaw_bin_size_rad) {
+            return false;
+        }
+
+        remaining_suffix_m -= segment_length_m;
+    }
+
+    return true;
 }
 
 double computeEdgeCost(const grid_map::GridMap& costmap,
@@ -556,7 +694,8 @@ AnalyticPathValidationResult validateAnalyticPathSegments(
     const SearchNode& start_node,
     const std::vector<std::array<double, 3>>& waypoints,
     const std::vector<ResolvedPlannerBehavior>& waypoint_resolutions,
-    double global_max_same_motion_length_m) {
+    double global_max_same_motion_length_m,
+    double yaw_bin_size_rad) {
     AnalyticPathValidationResult result;
     if (waypoints.size() < 2 || waypoints.size() != waypoint_resolutions.size()) {
         return result;
@@ -616,7 +755,19 @@ AnalyticPathValidationResult validateAnalyticPathSegments(
     result.valid = isTerminalMotionSegmentValid(simulated_node);
     if (!result.valid) {
         result.segment_directions.clear();
+        return result;
     }
+
+    const PlannerBehaviorProfile& goal_profile = *waypoint_resolutions.back().profile;
+    if (!analyticGoalApproachIsStraightEnough(
+            waypoints,
+            goal_profile.planner.goal_approach_straight_distance_m,
+            yaw_bin_size_rad)) {
+        result.valid = false;
+        result.detail = "goal_approach_turning_suffix";
+        result.segment_directions.clear();
+    }
+
     return result;
 }
 
@@ -881,6 +1032,23 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     if (debug_trace != nullptr) {
         debug_trace->costmap_build_ms =
             elapsedMilliseconds(costmap_start_time, Clock::now());
+        for (const auto& stage_layer : builder.getStageHeuristicLayerSummaries()) {
+            debug_trace->stage_heuristic_layers.push_back(PlannerStageHeuristicDebugSummary{
+                stage_layer.source_frontier_id,
+                stage_layer.target_frontier_id,
+                stage_layer.layer_name,
+                stage_layer.seed_cell_count,
+                stage_layer.finite_cell_count,
+                stage_layer.min_finite_value,
+                stage_layer.max_finite_value
+            });
+        }
+    }
+    std::unordered_map<size_t, std::string> stage_layer_name_by_frontier;
+    for (const auto& stage_layer : builder.getStageHeuristicLayerSummaries()) {
+        stage_layer_name_by_frontier.emplace(
+            stage_layer.source_frontier_id,
+            stage_layer.layer_name);
     }
 
     CollisionCheckerConfig default_collision_config;
@@ -942,6 +1110,11 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         }
         runtime->context =
             &contexts_by_behavior.at(runtime->descriptor.behavior_name);
+        const auto stage_layer_it =
+            stage_layer_name_by_frontier.find(runtime->descriptor.frontier_id);
+        if (stage_layer_it != stage_layer_name_by_frontier.end()) {
+            runtime->stage_heuristic_layer_name = stage_layer_it->second;
+        }
         runtime->best_g_by_key.reserve(50000);
         runtime->debug_summary.frontier_id = runtime->descriptor.frontier_id;
         runtime->debug_summary.frontier_role =
@@ -965,13 +1138,14 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     const HeuristicModel start_model = allowsReverseMotion(*start_context.profile, start_zone)
         ? HeuristicModel::REEDS_SHEPP
         : HeuristicModel::DUBINS;
-    const double start_h = std::max(
-        computeHolonomicHeuristic(
-            costmap,
-            grid_map::Position(request.start.x, request.start.y),
-            profiler),
-        computeNonHolonomicHeuristic(
-            heuristic, start_model, request.start, request.goal, profiler));
+    const FrontierHeuristicEvaluation start_heuristic = computeFrontierHeuristic(
+        costmap,
+        *frontier_runtimes.front(),
+        heuristic,
+        start_model,
+        request.start,
+        request.goal,
+        profiler);
 
     std::deque<SearchNode> nodes;
     nodes.push_back(SearchNode{
@@ -979,7 +1153,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         0,
         start_heading_bin,
         0.0,
-        start_h,
+        start_heuristic.combined_h,
         -1,
         start_zone,
         frontier_runtimes.front()->descriptor.behavior_name,
@@ -987,7 +1161,11 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         false,
         common::MotionDirection::Forward,
         0.0,
-        0.0
+        0.0,
+        start_heuristic.mode,
+        start_heuristic.stage_heuristic_value,
+        start_heuristic.final_goal_holonomic_value,
+        start_heuristic.nonholonomic_heuristic_value
     });
 
     const DiscreteStateKey start_key = discretizeState(
@@ -1229,10 +1407,14 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     node,
                     waypoints,
                     wp_resolutions,
-                    global_max_same_motion_length_m);
+                    global_max_same_motion_length_m,
+                    node_context.yaw_bin_size_rad);
             if (!analytic_validation.valid) {
                 outcome.debug_event.outcome = "failed";
-                outcome.debug_event.detail = "path_validation_failed";
+                outcome.debug_event.detail =
+                    analytic_validation.detail.empty()
+                        ? "path_validation_failed"
+                        : analytic_validation.detail;
                 return outcome;
             }
 
@@ -1352,6 +1534,14 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 expansion_debug.distance_to_goal_m =
                     std::hypot(request.goal.x - current_node.pose.x,
                                request.goal.y - current_node.pose.y);
+                expansion_debug.heuristic_mode =
+                    frontierHeuristicModeName(current_node.heuristic_mode);
+                expansion_debug.stage_heuristic_value =
+                    current_node.stage_heuristic_value;
+                expansion_debug.final_goal_holonomic_value =
+                    current_node.final_goal_holonomic_value;
+                expansion_debug.nonholonomic_heuristic_value =
+                    current_node.nonholonomic_heuristic_value;
                 {
                     std::lock_guard<std::mutex> frontier_lock(frontier.mutex);
                     expansion_debug.open_queue_size_after_pop = frontier.open_queue.size();
@@ -1678,13 +1868,19 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     common::ScopedProfilingTimer edge_cost_timer(
                         &frontier.profiling_collector, "planner.edge_cost");
                     return computeEdgeCost(
-                        costmap,
-                        *resolved.profile,
-                        current_node,
-                        successor_position,
-                        successor_pose.theta.radians(),
-                        projection.turn_dir,
-                        travel_m);
+                               costmap,
+                               *resolved.profile,
+                               current_node,
+                               successor_position,
+                               successor_pose.theta.radians(),
+                               projection.turn_dir,
+                               travel_m) +
+                        computeGoalApproachStraightPenalty(
+                            *resolved.profile,
+                            successor_pose,
+                            request.goal,
+                            projection.turn_dir,
+                            travel_m);
                 }();
                 const double new_g = current_node.g + edge_cost;
 
@@ -1711,17 +1907,16 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                             normalizeAngleUnsigned(successor_pose.theta.radians()));
                 }
 
-                const double holonomic_h =
-                    computeHolonomicHeuristic(
-                        costmap, successor_position, &frontier.profiling_collector);
-                const double nh_h = computeNonHolonomicHeuristic(
-                    heuristic,
-                    selectHeuristicModel(resolved),
-                    successor_pose,
-                    request.goal,
-                    &frontier.profiling_collector);
-                const double successor_h = std::max(holonomic_h, nh_h);
-
+                const FrontierHeuristicEvaluation successor_heuristic =
+                    computeFrontierHeuristic(
+                        costmap,
+                        destination_frontier,
+                        heuristic,
+                        selectHeuristicModel(resolved),
+                        successor_pose,
+                        request.goal,
+                        &frontier.profiling_collector);
+                const double successor_h = successor_heuristic.combined_h;
                 SearchNode successor_node;
                 successor_node.pose = successor_pose;
                 successor_node.frontier_id = resolved.frontier_id;
@@ -1737,6 +1932,13 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 successor_node.same_motion_length_m = successor_same_motion_length_m;
                 successor_node.same_motion_remaining_to_change_m =
                     successor_same_motion_remaining_to_change_m;
+                successor_node.heuristic_mode = successor_heuristic.mode;
+                successor_node.stage_heuristic_value =
+                    successor_heuristic.stage_heuristic_value;
+                successor_node.final_goal_holonomic_value =
+                    successor_heuristic.final_goal_holonomic_value;
+                successor_node.nonholonomic_heuristic_value =
+                    successor_heuristic.nonholonomic_heuristic_value;
 
                 const DiscreteStateKey successor_key = discretizeState(
                     successor_pose,

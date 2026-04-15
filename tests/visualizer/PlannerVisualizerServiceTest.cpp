@@ -65,6 +65,39 @@ zones:
 )";
 }
 
+std::string crossZoneMapYaml() {
+    return R"(
+maps:
+  name: "Visualizer Cross Zone Map"
+zones:
+  - name: "track_zone"
+    type: "TrackMainRoad"
+    planner_behavior: "primary_profile"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, -4.0]
+      - [10.0, -4.0]
+      - [10.0, 4.0]
+      - [0.0, 4.0]
+    lanes:
+      - lane_waypoints:
+          - [1.0, -1.5]
+          - [9.0, -1.5]
+      - lane_waypoints:
+          - [9.0, 1.5]
+          - [1.0, 1.5]
+  - name: "maneuver_zone"
+    type: "ManeuveringZone"
+    planner_behavior: "parking_profile"
+    coordinate_type: "world"
+    polygon:
+      - [30.0, -4.0]
+      - [40.0, -4.0]
+      - [40.0, 4.0]
+      - [30.0, 4.0]
+)";
+}
+
 std::string retryManeuveringMapYaml() {
     return R"(
 maps:
@@ -90,6 +123,35 @@ std::string readTextFile(const std::filesystem::path& path) {
     return std::string(
         std::istreambuf_iterator<char>(stream),
         std::istreambuf_iterator<char>());
+}
+
+void replaceProfilePlannerLine(std::string& behaviors,
+                               const std::string& profile_name,
+                               const std::string& key,
+                               const std::string& value) {
+    const size_t profile_pos = behaviors.find("  " + profile_name + ":\n");
+    if (profile_pos == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate " + profile_name + " in planner_behaviors.yaml");
+    }
+
+    const std::string line_prefix = "      " + key + ":";
+    const size_t line_pos = behaviors.find(line_prefix, profile_pos);
+    if (line_pos == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate " + profile_name + "." + key);
+    }
+
+    const size_t line_end = behaviors.find('\n', line_pos);
+    if (line_end == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate end of " + profile_name + "." + key);
+    }
+
+    behaviors.replace(
+        line_pos,
+        line_end - line_pos,
+        line_prefix + " " + value);
 }
 
 std::filesystem::path makeTempConfigsRoot(bool debug_mode,
@@ -119,51 +181,9 @@ std::filesystem::path makeTempConfigsRoot(bool debug_mode,
     }
 
     if (primary_only_forward) {
-        const size_t primary_profile_pos = behaviors.find("  primary_profile:\n");
-        if (primary_profile_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate primary_profile in planner_behaviors.yaml");
-        }
-        const std::string only_forward_false = "      only_forward_path: true";
-        const size_t only_forward_pos =
-            behaviors.find(only_forward_false, primary_profile_pos);
-        if (only_forward_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate primary_profile.only_forward_path");
-        }
-        behaviors.replace(
-            only_forward_pos,
-            only_forward_false.size(),
-            "      only_forward_path: true");
-
-        const size_t relaxed_profile_pos = behaviors.find("  relaxed_profile:\n");
-        if (relaxed_profile_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate relaxed_profile in planner_behaviors.yaml");
-        }
-        const std::string relaxed_only_forward_true = "      only_forward_path: true";
-        const size_t relaxed_only_forward_pos =
-            behaviors.find(relaxed_only_forward_true, relaxed_profile_pos);
-        if (relaxed_only_forward_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate relaxed_profile.only_forward_path");
-        }
-        behaviors.replace(
-            relaxed_only_forward_pos,
-            relaxed_only_forward_true.size(),
-            "      only_forward_path: false");
-
-        const std::string relaxed_planning_time = "      max_planning_time_ms: 3000";
-        const size_t relaxed_planning_time_pos =
-            behaviors.find(relaxed_planning_time, relaxed_profile_pos);
-        if (relaxed_planning_time_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate relaxed_profile.max_planning_time_ms");
-        }
-        behaviors.replace(
-            relaxed_planning_time_pos,
-            relaxed_planning_time.size(),
-            "      max_planning_time_ms: 5000");
+        replaceProfilePlannerLine(behaviors, "primary_profile", "only_forward_path", "true");
+        replaceProfilePlannerLine(behaviors, "relaxed_profile", "only_forward_path", "false");
+        replaceProfilePlannerLine(behaviors, "relaxed_profile", "max_planning_time_ms", "5000");
     }
 
     std::ofstream behavior_stream(temp_configs_root / "planner_behaviors.yaml");
@@ -365,6 +385,67 @@ TEST(PlannerVisualizerServiceTest, DebugModeIncludesProfilingForEachRetryAttempt
 
     EXPECT_TRUE(saw_failed_attempt);
     EXPECT_TRUE(saw_successful_attempt);
+}
+
+TEST(PlannerVisualizerServiceTest, DebugModeWritesStageHeuristicFieldsIntoCrossZoneReport) {
+    auto service = PlannerVisualizerService(PlannerVisualizerServiceConfig{
+        makeTempConfigsRoot(true),
+        "Pro_XD"
+    });
+    const auto map = service.loadMap(
+        MapLoadRequest{"cross_zone_map.yaml", crossZoneMapYaml(), "Pro_XD"});
+
+    const auto result = service.plan(PlanRequest{
+        map.map_id,
+        "Pro_XD",
+        PoseDto{2.0, 0.0, 0.0},
+        PoseDto{35.0, 0.0, 0.0}
+    });
+
+    ASSERT_TRUE(result.success) << result.detail;
+    ASSERT_FALSE(result.debug_report_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(result.debug_report_path));
+
+    const json report = loadJsonFile(result.debug_report_path);
+    ASSERT_TRUE(report.contains("attempts"));
+    ASSERT_FALSE(report.at("attempts").empty());
+
+    bool saw_stage_trace = false;
+    bool saw_profile_field = false;
+    bool saw_expansion_fields = false;
+    for (const auto& attempt : report.at("attempts")) {
+        if (!attempt.contains("debug_trace")) {
+            continue;
+        }
+        const json& trace = attempt.at("debug_trace");
+        if (trace.contains("stage_heuristic_layers") &&
+            trace.at("stage_heuristic_layers").size() == 2u) {
+            saw_stage_trace = true;
+        }
+        if (attempt.contains("profile_config")) {
+            const json& planner_config = attempt.at("profile_config").at("planner");
+            saw_profile_field =
+                saw_profile_field ||
+                (planner_config.contains("goal_approach_straight_distance_m") &&
+                 planner_config.at("goal_approach_straight_distance_m") == 2.0);
+        }
+        if (!trace.contains("expansions") || trace.at("expansions").empty()) {
+            continue;
+        }
+        const json& expansion = trace.at("expansions").at(0);
+        saw_expansion_fields =
+            expansion.contains("heuristic_mode") &&
+            expansion.contains("stage_heuristic_value") &&
+            expansion.contains("final_goal_holonomic_value") &&
+            expansion.contains("nonholonomic_heuristic_value");
+        if (saw_stage_trace && saw_profile_field && saw_expansion_fields) {
+            break;
+        }
+    }
+
+    EXPECT_TRUE(saw_stage_trace);
+    EXPECT_TRUE(saw_profile_field);
+    EXPECT_TRUE(saw_expansion_fields);
 }
 
 TEST(PlannerVisualizerServiceTest, OppositeHeadingFailureIncludesTurningRadiusGuidance) {

@@ -5,6 +5,7 @@
 #include <grid_map_core/grid_map_core.hpp>
 #include "coastmotionplanning/costs/costmap_builder.hpp"
 #include "coastmotionplanning/costs/costmap_types.hpp"
+#include "coastmotionplanning/costs/holonomic_obstacles_heuristic.hpp"
 #include "coastmotionplanning/math/angle.hpp"
 #include "coastmotionplanning/robot/car.hpp"
 #include "coastmotionplanning/zones/maneuvering_zone.hpp"
@@ -73,6 +74,7 @@ TEST_F(CostmapBuilderTest, BuildSameZone) {
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::LANE_DISTANCE));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::COMBINED_COST));
+    EXPECT_TRUE(builder.getStageHeuristicLayerSummaries().empty());
 }
 
 TEST_F(CostmapBuilderTest, BuildCrossZone) {
@@ -86,6 +88,12 @@ TEST_F(CostmapBuilderTest, BuildCrossZone) {
     // Verify dimensions cover both zones
     const auto& length = costmap.getLength();
     EXPECT_GT(length.x(), 50.0) << "Map should span both zones in X";
+    const auto& stage_summaries = builder.getStageHeuristicLayerSummaries();
+    ASSERT_EQ(stage_summaries.size(), 2u);
+    EXPECT_TRUE(costmap.exists(
+        costs::HolonomicObstaclesHeuristic::makeStageLayerName(0, 1)));
+    EXPECT_TRUE(costmap.exists(
+        costs::HolonomicObstaclesHeuristic::makeStageLayerName(1, 2)));
 }
 
 TEST_F(CostmapBuilderTest, GoalHeuristicIsZero) {
@@ -160,6 +168,38 @@ TEST_F(CostmapBuilderTest, GapBetweenZonesBecomesDrivableTransitionSpace) {
     EXPECT_FLOAT_EQ(zone_value, 1.0f);
     EXPECT_FLOAT_EQ(static_cost, costs::CostValues::FREE_SPACE);
     EXPECT_LT(combined_cost, costs::CostValues::LETHAL);
+}
+
+TEST_F(CostmapBuilderTest, StageHeuristicLayersSeedFromNextFrontierRegions) {
+    geometry::Polygon2d poly_c;
+    poly_c.outer() = {
+        geometry::Point2d(120, 0), geometry::Point2d(140, 0),
+        geometry::Point2d(140, 10), geometry::Point2d(120, 10),
+        geometry::Point2d(120, 0)
+    };
+    all_zones.push_back(std::make_shared<zones::ManeuveringZone>(poly_c, "zone_c"));
+
+    costs::CostmapBuilder builder(config, all_zones, *car);
+
+    math::Pose2d start(0.0, 0.0, math::Angle::from_radians(0.0));
+    math::Pose2d goal(130.0, 5.0, math::Angle::from_radians(0.0));
+
+    auto costmap = builder.build(start, goal);
+
+    const std::string start_stage_layer =
+        costs::HolonomicObstaclesHeuristic::makeStageLayerName(0, 1);
+    const std::string transition_stage_layer =
+        costs::HolonomicObstaclesHeuristic::makeStageLayerName(1, 2);
+
+    const grid_map::Position gap_pos(70.0, 5.0);
+    const grid_map::Position goal_zone_pos(130.0, 5.0);
+    EXPECT_NEAR(costmap.atPosition(start_stage_layer, gap_pos), 0.0f, 0.15f);
+    EXPECT_NEAR(costmap.atPosition(transition_stage_layer, goal_zone_pos), 0.0f, 0.15f);
+
+    const auto& stage_summaries = builder.getStageHeuristicLayerSummaries();
+    ASSERT_EQ(stage_summaries.size(), 2u);
+    EXPECT_GT(stage_summaries[0].seed_cell_count, 0u);
+    EXPECT_GT(stage_summaries[1].seed_cell_count, 0u);
 }
 
 TEST_F(CostmapBuilderTest, LaneMetadataLayersEncodeDirectionalHeadingAndDistance) {

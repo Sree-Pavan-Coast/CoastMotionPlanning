@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -54,6 +55,10 @@ struct PlannerExpansionDebugEvent {
     double h{0.0};
     double f{0.0};
     double distance_to_goal_m{0.0};
+    std::string heuristic_mode;
+    double stage_heuristic_value{std::numeric_limits<double>::quiet_NaN()};
+    double final_goal_holonomic_value{std::numeric_limits<double>::quiet_NaN()};
+    double nonholonomic_heuristic_value{std::numeric_limits<double>::quiet_NaN()};
     size_t open_queue_size_after_pop{0};
     bool goal_satisfied{false};
     bool terminal_motion_valid{false};
@@ -85,6 +90,16 @@ struct PlannerFrontierHandoffDebugSummary {
     size_t to_frontier_id{0};
     uint64_t transfer_count{0};
     double first_transfer_ms{-1.0};
+};
+
+struct PlannerStageHeuristicDebugSummary {
+    size_t source_frontier_id{0};
+    size_t target_frontier_id{0};
+    std::string layer_name;
+    size_t seed_cell_count{0};
+    size_t finite_cell_count{0};
+    double min_finite_value{std::numeric_limits<double>::quiet_NaN()};
+    double max_finite_value{std::numeric_limits<double>::quiet_NaN()};
 };
 
 struct HybridAStarPlannerDebugTrace {
@@ -128,6 +143,7 @@ struct HybridAStarPlannerDebugTrace {
     std::vector<common::ProfilingScopeSummary> profiling_scopes;
     std::vector<PlannerFrontierDebugSummary> frontier_summaries;
     std::vector<PlannerFrontierHandoffDebugSummary> frontier_handoffs;
+    std::vector<PlannerStageHeuristicDebugSummary> stage_heuristic_layers;
     std::vector<PlannerExpansionDebugEvent> expansions;
 };
 

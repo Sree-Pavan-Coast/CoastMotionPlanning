@@ -70,10 +70,42 @@ std::string readFile(const std::string& path) {
     return buffer.str();
 }
 
+void replaceProfilePlannerLine(std::string& behaviors,
+                               const std::string& profile_name,
+                               const std::string& key,
+                               const std::string& value) {
+    const size_t profile_pos = behaviors.find("  " + profile_name + ":\n");
+    if (profile_pos == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate " + profile_name + " in planner_behaviors.yaml");
+    }
+
+    const std::string line_prefix = "      " + key + ":";
+    const size_t line_pos = behaviors.find(line_prefix, profile_pos);
+    if (line_pos == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate " + profile_name + "." + key + " in planner_behaviors.yaml");
+    }
+
+    const size_t line_end = behaviors.find('\n', line_pos);
+    if (line_end == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate end of " + profile_name + "." + key + " line.");
+    }
+
+    behaviors.replace(
+        line_pos,
+        line_end - line_pos,
+        line_prefix + " " + value);
+}
+
 PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
                                                        double min_same_motion_length_m,
                                                        const std::string& robot_name = "E_Transit",
-                                                       bool debug_mode = false) {
+                                                       bool debug_mode = false,
+                                                       double goal_approach_straight_distance_m = 2.0,
+                                                       bool analytic_shot = true,
+                                                       bool near_goal_analytic_expansion = true) {
     const std::filesystem::path temp_dir =
         std::filesystem::temp_directory_path() / "coastmotionplanning_hybrid_astar_test";
     std::filesystem::create_directories(temp_dir);
@@ -95,46 +127,31 @@ PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
             debug_mode_disabled.size(),
             "  debug_mode: true");
     }
-    const size_t primary_profile_pos = behaviors.find("  primary_profile:\n");
-    if (primary_profile_pos == std::string::npos) {
-        throw std::runtime_error("Failed to locate primary_profile in planner_behaviors.yaml");
-    }
-    const std::string only_forward_line = "      only_forward_path: true";
-    const size_t only_forward_pos = behaviors.find(only_forward_line, primary_profile_pos);
-    if (only_forward_pos == std::string::npos) {
-        throw std::runtime_error(
-            "Failed to locate primary_profile.only_forward_path in planner_behaviors.yaml");
-    }
-    behaviors.replace(
-        only_forward_pos,
-        only_forward_line.size(),
-        std::string("      only_forward_path: ") + (only_forward_path ? "true" : "false"));
-
-    const size_t min_same_motion_key_pos = behaviors.find(
-        "      min_path_len_in_same_motion:",
-        primary_profile_pos);
-    if (min_same_motion_key_pos == std::string::npos) {
-        throw std::runtime_error(
-            "Failed to locate primary_profile.min_path_len_in_same_motion in planner_behaviors.yaml");
-    }
-    const size_t min_same_motion_line_end =
-        behaviors.find('\n', min_same_motion_key_pos);
-    if (min_same_motion_line_end == std::string::npos) {
-        throw std::runtime_error(
-            "Failed to locate end of primary_profile.min_path_len_in_same_motion line.");
-    }
-    const std::string current_min_same_motion = behaviors.substr(
-        min_same_motion_key_pos,
-        min_same_motion_line_end - min_same_motion_key_pos);
-    const size_t min_same_motion_pos = behaviors.find(current_min_same_motion, primary_profile_pos);
-    if (min_same_motion_pos == std::string::npos) {
-        throw std::runtime_error(
-            "Failed to locate primary_profile.min_path_len_in_same_motion in planner_behaviors.yaml");
-    }
-    behaviors.replace(
-        min_same_motion_pos,
-        current_min_same_motion.size(),
-        "      min_path_len_in_same_motion: " + std::to_string(min_same_motion_length_m));
+    replaceProfilePlannerLine(
+        behaviors,
+        "primary_profile",
+        "only_forward_path",
+        only_forward_path ? "true" : "false");
+    replaceProfilePlannerLine(
+        behaviors,
+        "primary_profile",
+        "min_path_len_in_same_motion",
+        std::to_string(min_same_motion_length_m));
+    replaceProfilePlannerLine(
+        behaviors,
+        "primary_profile",
+        "goal_approach_straight_distance_m",
+        std::to_string(goal_approach_straight_distance_m));
+    replaceProfilePlannerLine(
+        behaviors,
+        "primary_profile",
+        "analytic_shot",
+        analytic_shot ? "true" : "false");
+    replaceProfilePlannerLine(
+        behaviors,
+        "primary_profile",
+        "near_goal_analytic_expansion",
+        near_goal_analytic_expansion ? "true" : "false");
 
     std::ofstream behavior_file(temp_dir / "planner_behaviors.yaml");
     behavior_file << behaviors;
@@ -157,6 +174,75 @@ double straightPrimitiveLengthM(const PlannerBehaviorProfile& profile) {
     motion_table.initReedsShepp(motion_config);
     return static_cast<double>(motion_table.getTravelCost(0)) *
            profile.planner.xy_grid_resolution_m;
+}
+
+double normalizeAngleSigned(double angle) {
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kTwoPi = 2.0 * kPi;
+    angle = std::fmod(angle + kPi, kTwoPi);
+    if (angle < 0.0) {
+        angle += kTwoPi;
+    }
+    return angle - kPi;
+}
+
+bool tailMaintainsHeading(const std::vector<Pose2d>& poses,
+                          double tail_distance_m,
+                          double heading_tolerance_rad) {
+    if (poses.size() < 2) {
+        return false;
+    }
+
+    double remaining_distance_m = tail_distance_m;
+    const double final_heading_rad = poses.back().theta.radians();
+    for (size_t i = poses.size() - 1; i > 0 && remaining_distance_m > 1e-6; --i) {
+        const Pose2d& from = poses[i - 1];
+        const Pose2d& to = poses[i];
+        const double segment_length_m = std::hypot(to.x - from.x, to.y - from.y);
+        if (segment_length_m <= 1e-6) {
+            continue;
+        }
+
+        const double from_heading_delta =
+            std::abs(normalizeAngleSigned(from.theta.radians() - final_heading_rad));
+        const double to_heading_delta =
+            std::abs(normalizeAngleSigned(to.theta.radians() - final_heading_rad));
+        if (from_heading_delta > heading_tolerance_rad ||
+            to_heading_delta > heading_tolerance_rad) {
+            return false;
+        }
+        remaining_distance_m -= segment_length_m;
+    }
+
+    return true;
+}
+
+bool tailUsesOnlyMotionDirection(
+    const std::vector<Pose2d>& poses,
+    const std::vector<coastmotionplanning::common::MotionDirection>& segment_directions,
+    double tail_distance_m,
+    coastmotionplanning::common::MotionDirection expected_direction) {
+    if (poses.size() < 2 || segment_directions.size() != poses.size() - 1) {
+        return false;
+    }
+
+    double remaining_distance_m = tail_distance_m;
+    for (size_t i = segment_directions.size(); i > 0 && remaining_distance_m > 1e-6; --i) {
+        const size_t segment_idx = i - 1;
+        const double segment_length_m = std::hypot(
+            poses[segment_idx + 1].x - poses[segment_idx].x,
+            poses[segment_idx + 1].y - poses[segment_idx].y);
+        if (segment_length_m <= 1e-6) {
+            continue;
+        }
+
+        if (segment_directions[segment_idx] != expected_direction) {
+            return false;
+        }
+        remaining_distance_m -= segment_length_m;
+    }
+
+    return true;
 }
 
 std::shared_ptr<coastmotionplanning::zones::ManeuveringZone> makeManeuveringZone(
@@ -457,7 +543,7 @@ TEST(HybridAStarPlannerTest, GoalMustAllowMinimumSameMotionLengthBeforeStopping)
 
 TEST(HybridAStarPlannerTest, AnalyticExpansionOutputHonorsMinimumSameMotionLength) {
     auto behavior_set =
-        loadCustomPrimaryProfileBehaviorSet(false, 5.0, "Pro_XD");
+        loadCustomPrimaryProfileBehaviorSet(false, 5.0, "Pro_XD", false, 0.0);
     behavior_set.setMinimumPlanningTimeMs(5000);
     const Car car = makeCar();
     std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
@@ -479,6 +565,124 @@ TEST(HybridAStarPlannerTest, AnalyticExpansionOutputHonorsMinimumSameMotionLengt
     ASSERT_FALSE(run_lengths.empty());
     for (const double run_length : run_lengths) {
         EXPECT_GE(run_length + 1e-6, 5.0);
+    }
+}
+
+TEST(HybridAStarPlannerTest, GoalApproachStraightPreferenceKeepsFinalTailStraight) {
+    auto behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(false, 1.0, "Pro_XD", false, 2.0);
+    behavior_set.setMinimumPlanningTimeMs(5000);
+    const auto& primary_profile = behavior_set.get("primary_profile");
+    const double heading_tolerance_rad =
+        Angle::from_degrees(primary_profile.planner.yaw_grid_resolution_deg).radians();
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -4.0, 12.0, 4.0)
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(2.0, 0.0, 0.0);
+    request.goal = makePose(7.0, 0.0, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    EXPECT_TRUE(tailMaintainsHeading(
+        result.poses,
+        primary_profile.planner.goal_approach_straight_distance_m,
+        heading_tolerance_rad));
+}
+
+TEST(HybridAStarPlannerTest, GoalApproachStraightPreferenceDisabledAllowsCurvedTail) {
+    auto behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(false, 1.0, "Pro_XD", false, 0.0);
+    behavior_set.setMinimumPlanningTimeMs(5000);
+    const auto& primary_profile = behavior_set.get("primary_profile");
+    const double heading_tolerance_rad =
+        Angle::from_degrees(primary_profile.planner.yaw_grid_resolution_deg).radians();
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeManeuveringZone(-5.0, -5.0, 15.0, 20.0, "primary_profile")
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(0.15, 14.4, 0.0);
+    request.goal = makePose(4.7, 4.84, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    EXPECT_FALSE(tailMaintainsHeading(result.poses, 2.0, heading_tolerance_rad));
+}
+
+TEST(HybridAStarPlannerTest, ReverseStraightGoalApproachCountsAsStraight) {
+    const auto behavior_set = loadCustomPrimaryProfileBehaviorSet(
+        false,
+        1.0,
+        "Pro_XD",
+        false,
+        2.0,
+        false,
+        false);
+    const auto& primary_profile = behavior_set.get("primary_profile");
+    const double heading_tolerance_rad =
+        Angle::from_degrees(primary_profile.planner.yaw_grid_resolution_deg).radians();
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeManeuveringZone(-2.0, -4.0, 8.0, 4.0, "primary_profile")
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(4.5, 0.0, 0.0);
+    request.goal = makePose(2.0, 0.0, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    EXPECT_TRUE(tailMaintainsHeading(
+        result.poses,
+        primary_profile.planner.goal_approach_straight_distance_m,
+        heading_tolerance_rad));
+    EXPECT_TRUE(tailUsesOnlyMotionDirection(
+        result.poses,
+        result.segment_directions,
+        primary_profile.planner.goal_approach_straight_distance_m,
+        coastmotionplanning::common::MotionDirection::Reverse));
+}
+
+TEST(HybridAStarPlannerTest, AnalyticExpansionRejectsTurningGoalApproachSuffix) {
+    auto behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(false, 1.0, "Pro_XD", true, 2.0);
+    behavior_set.setMinimumPlanningTimeMs(5000);
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeManeuveringZone(-5.0, -5.0, 15.0, 20.0, "primary_profile")
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(0.15, 14.4, 0.0);
+    request.goal = makePose(4.7, 4.84, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_NE(result.debug_trace, nullptr);
+    EXPECT_TRUE(std::any_of(
+        result.debug_trace->expansions.begin(),
+        result.debug_trace->expansions.end(),
+        [](const auto& expansion) {
+            return expansion.analytic_attempted &&
+                expansion.analytic_event.detail == "goal_approach_turning_suffix";
+        }));
+    if (result.success) {
+        EXPECT_EQ(result.detail.find("analytic expansion"), std::string::npos);
     }
 }
 
@@ -513,6 +717,78 @@ TEST(HybridAStarPlannerTest, DebugModeCollectsProfilingScopesOnSuccess) {
     EXPECT_TRUE(has_scope("costmap.grid_creation"));
     EXPECT_TRUE(has_scope("planner.goal_check"));
     EXPECT_TRUE(has_scope("planner.primitive_expansion_attempt"));
+}
+
+TEST(HybridAStarPlannerTest, SameZoneDebugTraceUsesFinalGoalHeuristicOnly) {
+    const PlannerBehaviorSet behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(false, 1.0, "Pro_XD", true);
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -4.0, 12.0, 4.0)
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(2.0, 0.0, 0.0);
+    request.goal = makePose(7.0, 0.0, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    ASSERT_NE(result.debug_trace, nullptr);
+    EXPECT_TRUE(result.debug_trace->stage_heuristic_layers.empty());
+    ASSERT_FALSE(result.debug_trace->expansions.empty());
+    EXPECT_TRUE(std::all_of(
+        result.debug_trace->expansions.begin(),
+        result.debug_trace->expansions.end(),
+        [](const auto& expansion) {
+            return expansion.heuristic_mode == "final_goal";
+        }));
+}
+
+TEST(HybridAStarPlannerTest, CrossZoneDebugTraceIncludesStageHeuristicLayers) {
+    const PlannerBehaviorSet behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(false, 1.0, "Pro_XD", true);
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -4.0, 10.0, 4.0),
+        makeManeuveringZone(30.0, -4.0, 40.0, 4.0, "parking_profile")
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(2.0, 0.0, 0.0);
+    request.goal = makePose(35.0, 0.0, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_NE(result.debug_trace, nullptr);
+    ASSERT_EQ(result.debug_trace->stage_heuristic_layers.size(), 2u);
+    EXPECT_TRUE(std::any_of(
+        result.debug_trace->stage_heuristic_layers.begin(),
+        result.debug_trace->stage_heuristic_layers.end(),
+        [](const auto& stage_layer) {
+            return stage_layer.source_frontier_id == 0 &&
+                stage_layer.target_frontier_id == 1 &&
+                stage_layer.seed_cell_count > 0;
+        }));
+    EXPECT_TRUE(std::any_of(
+        result.debug_trace->stage_heuristic_layers.begin(),
+        result.debug_trace->stage_heuristic_layers.end(),
+        [](const auto& stage_layer) {
+            return stage_layer.source_frontier_id == 1 &&
+                stage_layer.target_frontier_id == 2 &&
+                stage_layer.seed_cell_count > 0;
+        }));
+    ASSERT_FALSE(result.debug_trace->expansions.empty());
+    EXPECT_TRUE(std::any_of(
+        result.debug_trace->expansions.begin(),
+        result.debug_trace->expansions.end(),
+        [](const auto& expansion) {
+            return expansion.heuristic_mode == "stage_frontier";
+        }));
 }
 
 } // namespace

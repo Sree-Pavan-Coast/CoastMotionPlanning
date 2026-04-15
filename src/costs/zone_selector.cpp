@@ -404,7 +404,9 @@ ZoneSelectionResult ZoneSelector::select(
     const math::Pose2d& start,
     const math::Pose2d& goal,
     const std::vector<std::shared_ptr<zones::Zone>>& all_zones,
-    double alpha) const {
+    double alpha,
+    const std::string& start_frontier_behavior,
+    const std::string& transition_frontier_behavior) const {
 
     geometry::Point2d start_pt(start.x, start.y);
     geometry::Point2d goal_pt(goal.x, goal.y);
@@ -423,6 +425,43 @@ ZoneSelectionResult ZoneSelector::select(
     result.selected_zones.push_back(start_zone);
     if (start_zone != goal_zone) {
         result.selected_zones.push_back(goal_zone);
+    }
+
+    const auto resolvedZoneBehavior =
+        [&](const std::shared_ptr<zones::Zone>& zone,
+            const std::string& fallback_behavior) {
+            if (zone == nullptr) {
+                return fallback_behavior;
+            }
+            const std::string resolved = zone->getResolvedPlannerBehavior();
+            return resolved.empty() ? fallback_behavior : resolved;
+        };
+
+    result.frontiers.push_back(SearchFrontierDescriptor{
+        0,
+        SearchFrontierRole::StartZone,
+        start_zone,
+        start_frontier_behavior,
+        std::nullopt
+    });
+    if (start_zone != goal_zone) {
+        result.frontiers.push_back(SearchFrontierDescriptor{
+            1,
+            SearchFrontierRole::Transition,
+            nullptr,
+            transition_frontier_behavior.empty()
+                ? resolvedZoneBehavior(start_zone, start_frontier_behavior)
+                : transition_frontier_behavior,
+            2
+        });
+        result.frontiers.push_back(SearchFrontierDescriptor{
+            2,
+            SearchFrontierRole::GoalZone,
+            goal_zone,
+            resolvedZoneBehavior(goal_zone, start_frontier_behavior),
+            std::nullopt
+        });
+        result.frontiers[0].next_frontier_id = 1;
     }
 
     // Collect zone polygons

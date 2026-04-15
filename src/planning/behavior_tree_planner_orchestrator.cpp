@@ -21,6 +21,7 @@ constexpr const char* kStartZoneBehaviorKey = "start_zone_behavior";
 constexpr const char* kGoalZoneBehaviorKey = "goal_zone_behavior";
 constexpr const char* kPreferredProfileKey = "preferred_profile";
 constexpr const char* kSelectedProfileKey = "selected_profile";
+constexpr const char* kTransitionProfileKey = "transition_profile";
 constexpr const char* kAttemptIndexKey = "attempt_index";
 constexpr const char* kPlanSucceededKey = "plan_succeeded";
 constexpr const char* kRuntimeStateKey = "runtime_state";
@@ -123,6 +124,21 @@ void registerPlannerNodes(BT::BehaviorTreeFactory& factory) {
         });
 
     factory.registerSimpleCondition(
+        "HasStartZoneType",
+        [](BT::TreeNode& node) {
+            const auto expected = node.getInput<std::string>("zone_type");
+            if (!expected) {
+                throw BT::RuntimeError(expected.error());
+            }
+
+            const std::string start_zone_type =
+                blackboard(node)->get<std::string>(kStartZoneTypeKey);
+            return start_zone_type == expected.value() ? BT::NodeStatus::SUCCESS
+                                                       : BT::NodeStatus::FAILURE;
+        },
+        {BT::InputPort<std::string>("zone_type")});
+
+    factory.registerSimpleCondition(
         "GoalZoneTypeEquals",
         [](BT::TreeNode& node) {
             const auto expected = node.getInput<std::string>("zone_type");
@@ -147,6 +163,27 @@ void registerPlannerNodes(BT::BehaviorTreeFactory& factory) {
             return setPreferredProfile(node, profile.value());
         },
         {BT::InputPort<std::string>("profile")});
+
+    factory.registerSimpleAction(
+        "ResolveTransitionProfile",
+        [](BT::TreeNode& node) {
+            auto* board = blackboard(node);
+            std::string transition_profile;
+
+            const std::string start_zone_type =
+                board->get<std::string>(kStartZoneTypeKey);
+            const std::string goal_zone_type =
+                board->get<std::string>(kGoalZoneTypeKey);
+            auto state = runtimeState(node);
+            if (start_zone_type == "ManeuveringZone" &&
+                goal_zone_type == "TrackMainRoad" &&
+                state->behavior_set->contains("maneuver_to_track_profile")) {
+                transition_profile = "maneuver_to_track_profile";
+            }
+
+            board->set<std::string>(kTransitionProfileKey, transition_profile);
+            return BT::NodeStatus::SUCCESS;
+        });
 
     factory.registerSimpleCondition(
         "CanRetryWithRelaxed",
@@ -183,7 +220,9 @@ void registerPlannerNodes(BT::BehaviorTreeFactory& factory) {
             state->attempted_profiles.push_back(profile.value());
 
             const PlannerRunResult result =
-                state->runner({profile.value(), state->attempt_index});
+                state->runner({profile.value(),
+                               blackboard(node)->get<std::string>(kTransitionProfileKey),
+                               state->attempt_index});
             state->detail = result.detail;
             state->plan_succeeded = result.success;
             blackboard(node)->set<bool>(kPlanSucceededKey, result.success);
@@ -218,6 +257,7 @@ BehaviorTreePlanResult BehaviorTreePlannerOrchestrator::run(
     blackboard->set<std::string>(kGoalZoneBehaviorKey, zoneBehaviorName(request.goal_zone));
     blackboard->set<std::string>(kPreferredProfileKey, "");
     blackboard->set<std::string>(kSelectedProfileKey, "");
+    blackboard->set<std::string>(kTransitionProfileKey, "");
     blackboard->set<size_t>(kAttemptIndexKey, 0);
     blackboard->set<bool>(kPlanSucceededKey, false);
 

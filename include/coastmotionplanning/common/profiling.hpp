@@ -52,6 +52,17 @@ public:
         return results;
     }
 
+    void mergeFrom(const ProfilingCollector& other) {
+        for (const auto& entry : other.summaries_) {
+            const auto& other_summary = entry.second;
+            auto& summary = summaries_[entry.first];
+            summary.scope_name = other_summary.scope_name;
+            summary.count += other_summary.count;
+            summary.total_ms += other_summary.total_ms;
+            summary.max_ms = std::max(summary.max_ms, other_summary.max_ms);
+        }
+    }
+
 private:
     std::unordered_map<std::string, ProfilingScopeSummary> summaries_;
 };

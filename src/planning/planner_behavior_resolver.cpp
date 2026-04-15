@@ -3,29 +3,27 @@
 #include <cmath>
 
 #include "coastmotionplanning/costs/costmap_types.hpp"
-#include "coastmotionplanning/costs/zone_selector.hpp"
 
 namespace coastmotionplanning {
 namespace planning {
 
 namespace {
 
-struct ZoneConstraintLookup {
+struct FrontierConstraintLookup {
     enum class Kind {
-        CurrentZone,
-        Transition,
-        IndexedZone
+        CurrentFrontier,
+        IndexedFrontier
     };
 
-    Kind kind{Kind::CurrentZone};
-    size_t zone_index{0};
+    Kind kind{Kind::CurrentFrontier};
+    size_t frontier_id{0};
 };
 
-ZoneConstraintLookup lookupZoneConstraint(
+FrontierConstraintLookup lookupFrontierConstraint(
     const math::Pose2d& successor_pose,
     const grid_map::GridMap& costmap,
-    size_t candidate_zone_count) {
-    ZoneConstraintLookup result;
+    size_t frontier_count) {
+    FrontierConstraintLookup result;
 
     if (!costmap.exists(costs::CostmapLayerNames::ZONE_CONSTRAINTS)) {
         return result;
@@ -40,22 +38,17 @@ ZoneConstraintLookup lookupZoneConstraint(
         costs::CostmapLayerNames::ZONE_CONSTRAINTS,
         successor_position,
         grid_map::InterpolationMethods::INTER_NEAREST);
-    if (std::isnan(zone_value)) {
-        return result;
-    }
-
-    if (std::abs(zone_value - costs::ZoneConstraintValues::ZONE_TRANSITION) < 0.5f ||
+    if (std::isnan(zone_value) ||
         std::abs(zone_value - costs::ZoneConstraintValues::ZONE_NONE) < 0.5f) {
-        result.kind = ZoneConstraintLookup::Kind::Transition;
         return result;
     }
 
-    const long zone_index = std::lround(zone_value);
-    if (zone_index >= 0 &&
-        static_cast<size_t>(zone_index) < candidate_zone_count &&
-        std::abs(zone_value - static_cast<float>(zone_index)) < 0.5f) {
-        result.kind = ZoneConstraintLookup::Kind::IndexedZone;
-        result.zone_index = static_cast<size_t>(zone_index);
+    const long frontier_id = std::lround(zone_value);
+    if (frontier_id >= 0 &&
+        static_cast<size_t>(frontier_id) < frontier_count &&
+        std::abs(zone_value - static_cast<float>(frontier_id)) < 0.5f) {
+        result.kind = FrontierConstraintLookup::Kind::IndexedFrontier;
+        result.frontier_id = static_cast<size_t>(frontier_id);
     }
 
     return result;
@@ -66,47 +59,36 @@ ZoneConstraintLookup lookupZoneConstraint(
 ResolvedPlannerBehavior PlannerBehaviorResolver::resolve(
     const math::Pose2d& successor_pose,
     const grid_map::GridMap& costmap,
+    size_t current_frontier_id,
     const std::shared_ptr<zones::Zone>& current_zone,
     const std::string& current_behavior_name,
-    const std::vector<std::shared_ptr<zones::Zone>>& candidate_zones,
+    const std::vector<costs::SearchFrontierDescriptor>& frontiers,
     const PlannerBehaviorSet& behavior_set) {
-    const ZoneConstraintLookup lookup =
-        lookupZoneConstraint(successor_pose, costmap, candidate_zones.size());
+    const FrontierConstraintLookup lookup =
+        lookupFrontierConstraint(successor_pose, costmap, frontiers.size());
 
-    if (lookup.kind != ZoneConstraintLookup::Kind::IndexedZone) {
+    if (lookup.kind != FrontierConstraintLookup::Kind::IndexedFrontier) {
         return ResolvedPlannerBehavior{
+            current_frontier_id,
             current_zone,
             current_behavior_name,
             &behavior_set.get(current_behavior_name),
+            false,
             false
         };
     }
 
-    const auto& containing_zone = candidate_zones[lookup.zone_index];
-    if (containing_zone == nullptr || containing_zone == current_zone) {
-        return ResolvedPlannerBehavior{
-            current_zone,
-            current_behavior_name,
-            &behavior_set.get(current_behavior_name),
-            false
-        };
-    }
-
-    const std::string resolved_behavior_name = containing_zone->getResolvedPlannerBehavior();
-    if (resolved_behavior_name.empty()) {
-        return ResolvedPlannerBehavior{
-            containing_zone,
-            current_behavior_name,
-            &behavior_set.get(current_behavior_name),
-            true
-        };
-    }
+    const auto& frontier = frontiers[lookup.frontier_id];
+    const std::string resolved_behavior_name =
+        frontier.behavior_name.empty() ? current_behavior_name : frontier.behavior_name;
 
     return ResolvedPlannerBehavior{
-        containing_zone,
+        frontier.frontier_id,
+        frontier.zone,
         resolved_behavior_name,
         &behavior_set.get(resolved_behavior_name),
-        true
+        frontier.zone != nullptr && frontier.zone != current_zone,
+        frontier.frontier_id != current_frontier_id
     };
 }
 

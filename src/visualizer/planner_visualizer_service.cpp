@@ -105,6 +105,34 @@ json profileToJson(const planning::PlannerBehaviorProfile& profile) {
 }
 
 json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace) {
+    json frontier_summaries = json::array();
+    for (const auto& frontier : trace.frontier_summaries) {
+        frontier_summaries.push_back(json{
+            {"frontier_id", frontier.frontier_id},
+            {"frontier_role", frontier.frontier_role},
+            {"zone_name", frontier.zone_name},
+            {"behavior_name", frontier.behavior_name},
+            {"enqueued", frontier.enqueued},
+            {"popped", frontier.popped},
+            {"stale_entries_skipped", frontier.stale_entries_skipped},
+            {"closed_set_size", frontier.closed_set_size},
+            {"open_queue_peak_size", frontier.open_queue_peak_size},
+            {"first_enqueue_ms", frontier.first_enqueue_ms},
+            {"first_pop_ms", frontier.first_pop_ms},
+            {"profiling", {{"scopes", profilingScopesToJson(frontier.profiling_scopes)}}}
+        });
+    }
+
+    json frontier_handoffs = json::array();
+    for (const auto& handoff : trace.frontier_handoffs) {
+        frontier_handoffs.push_back(json{
+            {"from_frontier_id", handoff.from_frontier_id},
+            {"to_frontier_id", handoff.to_frontier_id},
+            {"transfer_count", handoff.transfer_count},
+            {"first_transfer_ms", handoff.first_transfer_ms}
+        });
+    }
+
     json expansions = json::array();
     for (const auto& expansion : trace.expansions) {
         json primitive_events = json::array();
@@ -127,6 +155,8 @@ json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace
         expansions.push_back(json{
             {"expansion_index", expansion.expansion_index},
             {"node_index", expansion.node_index},
+            {"frontier_id", expansion.frontier_id},
+            {"frontier_role", expansion.frontier_role},
             {"pose", poseToJson(expansion.pose)},
             {"zone_name", expansion.zone_name},
             {"behavior_name", expansion.behavior_name},
@@ -156,6 +186,7 @@ json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace
 
     return json{
         {"initial_behavior_name", trace.initial_behavior_name},
+        {"transition_behavior_name", trace.transition_behavior_name},
         {"start_zone_name", trace.start_zone_name},
         {"goal_zone_name", trace.goal_zone_name},
         {"selected_zone_names", trace.selected_zone_names},
@@ -203,6 +234,8 @@ json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace
         {"profiling", {
             {"scopes", profilingScopesToJson(trace.profiling_scopes)}
         }},
+        {"frontier_summaries", frontier_summaries},
+        {"frontier_handoffs", frontier_handoffs},
         {"terminal_reason", trace.terminal_reason},
         {"expansions", expansions}
     };
@@ -435,6 +468,7 @@ PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
         planner_request.start = start_pose;
         planner_request.goal = goal_pose;
         planner_request.initial_behavior_name = attempt.profile;
+        planner_request.transition_behavior_name = attempt.transition_profile;
 
         last_planner_result = planner.plan(planner_request);
         attempt_records.push_back(AttemptRecord{attempt, last_planner_result});
@@ -510,6 +544,7 @@ PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
                 json attempt_json{
                     {"attempt_index", record.attempt.attempt_index},
                     {"profile", record.attempt.profile},
+                    {"transition_profile", record.attempt.transition_profile},
                     {"result", {
                         {"success", record.result.success},
                         {"detail", record.result.detail},
@@ -788,7 +823,8 @@ std::string PlannerVisualizerService::enrichFailureDetail(
         }
     }
     if (detail.find("timed out") != std::string::npos ||
-        detail.find("exhausted the search space") != std::string::npos) {
+        detail.find("exhausted the search space") != std::string::npos ||
+        detail.find("exhausted the frontier queues") != std::string::npos) {
         message += " Visualizer planning currently uses the selected car's turning radius (" +
                    std::to_string(turning_radius_m) + " m for " +
                    car_definition.name + ").";

@@ -124,7 +124,7 @@ std::filesystem::path makeTempConfigsRoot(bool debug_mode,
             throw std::runtime_error(
                 "Failed to locate primary_profile in planner_behaviors.yaml");
         }
-        const std::string only_forward_false = "      only_forward_path: false";
+        const std::string only_forward_false = "      only_forward_path: true";
         const size_t only_forward_pos =
             behaviors.find(only_forward_false, primary_profile_pos);
         if (only_forward_pos == std::string::npos) {
@@ -135,6 +135,35 @@ std::filesystem::path makeTempConfigsRoot(bool debug_mode,
             only_forward_pos,
             only_forward_false.size(),
             "      only_forward_path: true");
+
+        const size_t relaxed_profile_pos = behaviors.find("  relaxed_profile:\n");
+        if (relaxed_profile_pos == std::string::npos) {
+            throw std::runtime_error(
+                "Failed to locate relaxed_profile in planner_behaviors.yaml");
+        }
+        const std::string relaxed_only_forward_true = "      only_forward_path: true";
+        const size_t relaxed_only_forward_pos =
+            behaviors.find(relaxed_only_forward_true, relaxed_profile_pos);
+        if (relaxed_only_forward_pos == std::string::npos) {
+            throw std::runtime_error(
+                "Failed to locate relaxed_profile.only_forward_path");
+        }
+        behaviors.replace(
+            relaxed_only_forward_pos,
+            relaxed_only_forward_true.size(),
+            "      only_forward_path: false");
+
+        const std::string relaxed_planning_time = "      max_planning_time_ms: 3000";
+        const size_t relaxed_planning_time_pos =
+            behaviors.find(relaxed_planning_time, relaxed_profile_pos);
+        if (relaxed_planning_time_pos == std::string::npos) {
+            throw std::runtime_error(
+                "Failed to locate relaxed_profile.max_planning_time_ms");
+        }
+        behaviors.replace(
+            relaxed_planning_time_pos,
+            relaxed_planning_time.size(),
+            "      max_planning_time_ms: 5000");
     }
 
     std::ofstream behavior_stream(temp_configs_root / "planner_behaviors.yaml");
@@ -351,8 +380,8 @@ TEST(PlannerVisualizerServiceTest, OppositeHeadingFailureIncludesTurningRadiusGu
     });
 
     EXPECT_FALSE(result.success);
-    EXPECT_NE(result.detail.find("turning radius"), std::string::npos);
-    EXPECT_NE(result.detail.find("maneuvering zone"), std::string::npos);
+    EXPECT_NE(result.detail.find("turning radius"), std::string::npos) << result.detail;
+    EXPECT_NE(result.detail.find("maneuvering zone"), std::string::npos) << result.detail;
 }
 
 TEST(PlannerVisualizerServiceTest, PlanThrowsOnUnknownMapId) {

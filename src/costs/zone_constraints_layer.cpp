@@ -1,5 +1,8 @@
 #include "coastmotionplanning/costs/zone_constraints_layer.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 #include <boost/geometry/algorithms/within.hpp>
 
 namespace coastmotionplanning {
@@ -7,17 +10,23 @@ namespace costs {
 
 void ZoneConstraintsLayer::build(
     grid_map::GridMap& costmap,
-    const std::vector<std::shared_ptr<zones::Zone>>& selected_zones,
-    const geometry::Polygon2d& search_boundary) {
+    const ZoneSelectionResult& selection) {
 
     // Add layer initialized to ZONE_NONE (lethal for anything outside zones)
     costmap.add(CostmapLayerNames::ZONE_CONSTRAINTS, ZoneConstraintValues::ZONE_NONE);
 
-    // Mark cells inside the search boundary but outside any zone as ZONE_TRANSITION
-    // so the planner can traverse gap regions between zones.
+    // Stamp the search boundary with the transition frontier when one exists.
+    // This makes the handoff frontier first-class instead of using a generic
+    // "keep current behavior" transition sentinel.
+    const auto transition_it = std::find_if(
+        selection.frontiers.begin(),
+        selection.frontiers.end(),
+        [](const SearchFrontierDescriptor& frontier) {
+            return frontier.role == SearchFrontierRole::Transition;
+        });
     {
         grid_map::Polygon gm_boundary;
-        for (const auto& pt : search_boundary.outer()) {
+        for (const auto& pt : selection.search_boundary.outer()) {
             gm_boundary.addVertex(grid_map::Position(
                 geometry::bg::get<0>(pt), geometry::bg::get<1>(pt)));
         }
@@ -30,15 +39,20 @@ void ZoneConstraintsLayer::build(
         for (grid_map::PolygonIterator it(costmap, gm_boundary);
              !it.isPastEnd(); ++it) {
             costmap.at(CostmapLayerNames::ZONE_CONSTRAINTS, *it) =
-                ZoneConstraintValues::ZONE_TRANSITION;
+                transition_it != selection.frontiers.end()
+                    ? static_cast<float>(transition_it->frontier_id)
+                    : ZoneConstraintValues::ZONE_NONE;
         }
     }
 
-    // For each zone, stamp cells with the zone's index (0-based).
-    // Zones overwrite transition cells, but not previously stamped zone cells,
-    // which preserves first-zone ordering when polygons overlap.
-    for (size_t zone_idx = 0; zone_idx < selected_zones.size(); ++zone_idx) {
-        const auto& zone = selected_zones[zone_idx];
+    // Stamp all frontier-owned concrete zone polygons. Concrete frontiers
+    // overwrite the transition frontier, but not previously stamped concrete
+    // frontiers, which preserves ordering when polygons overlap.
+    for (const auto& frontier : selection.frontiers) {
+        if (frontier.zone == nullptr) {
+            continue;
+        }
+        const auto& zone = frontier.zone;
 
         // Convert to grid_map polygon
         grid_map::Polygon gm_polygon;
@@ -58,12 +72,17 @@ void ZoneConstraintsLayer::build(
                 geometry::bg::get<1>(outer[i])));
         }
 
-        float zone_value = static_cast<float>(zone_idx);
+        const float frontier_value = static_cast<float>(frontier.frontier_id);
         for (grid_map::PolygonIterator it(costmap, gm_polygon);
              !it.isPastEnd(); ++it) {
             float& cell = costmap.at(CostmapLayerNames::ZONE_CONSTRAINTS, *it);
-            if (cell >= ZoneConstraintValues::ZONE_TRANSITION) {
-                cell = zone_value;
+            if (cell >= ZoneConstraintValues::ZONE_NONE ||
+                transition_it != selection.frontiers.end()) {
+                if (cell >= ZoneConstraintValues::ZONE_NONE ||
+                    (transition_it != selection.frontiers.end() &&
+                     std::abs(cell - static_cast<float>(transition_it->frontier_id)) < 0.5f)) {
+                    cell = frontier_value;
+                }
             }
         }
     }

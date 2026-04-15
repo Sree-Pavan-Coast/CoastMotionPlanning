@@ -41,6 +41,7 @@ TEST_F(ZoneSelectorTest, StartAndGoalInSameZone) {
     auto result = selector.select(start, goal, all_zones);
 
     EXPECT_EQ(result.selected_zones.size(), 1u);
+    EXPECT_EQ(result.frontiers.size(), 1u);
     EXPECT_FALSE(result.search_boundary.outer().empty());
 }
 
@@ -52,6 +53,10 @@ TEST_F(ZoneSelectorTest, StartAndGoalInDifferentZones) {
     auto result = selector.select(start, goal, all_zones);
 
     EXPECT_EQ(result.selected_zones.size(), 2u);
+    ASSERT_EQ(result.frontiers.size(), 3u);
+    EXPECT_EQ(result.frontiers[0].frontier_id, 0u);
+    EXPECT_EQ(result.frontiers[1].frontier_id, 1u);
+    EXPECT_EQ(result.frontiers[2].frontier_id, 2u);
     EXPECT_FALSE(result.search_boundary.outer().empty());
 }
 
@@ -103,6 +108,7 @@ TEST_F(ZoneSelectorTest, GappedZones_ConcaveHullBridgesGap) {
     auto result = selector.select(start, goal, all_zones);
 
     EXPECT_EQ(result.selected_zones.size(), 2u);
+    EXPECT_EQ(result.frontiers.size(), 3u);
     EXPECT_TRUE(costs::ZoneSelector::isInsidePolygon(
         geometry::Point2d(0.0, 0.0), result.search_boundary));
     EXPECT_TRUE(costs::ZoneSelector::isInsidePolygon(

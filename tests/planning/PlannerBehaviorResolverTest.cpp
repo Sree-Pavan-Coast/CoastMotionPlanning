@@ -86,18 +86,9 @@ Pose2d makePose(double x, double y) {
 }
 
 grid_map::GridMap buildZoneConstraintCostmap(
-    const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>>& zones) {
-    std::vector<Polygon2d> polygons;
-    polygons.reserve(zones.size());
-    for (const auto& zone : zones) {
-        polygons.push_back(zone->getPolygon());
-    }
-
-    const Polygon2d search_boundary =
-        coastmotionplanning::costs::ZoneSelector::computeConcaveHull(polygons, 0.0);
-
+    const coastmotionplanning::costs::ZoneSelectionResult& selection) {
     coastmotionplanning::geometry::Box2d bbox;
-    coastmotionplanning::geometry::bg::envelope(search_boundary, bbox);
+    coastmotionplanning::geometry::bg::envelope(selection.search_boundary, bbox);
 
     constexpr double kMarginM = 1.0;
     const double min_x =
@@ -119,8 +110,24 @@ grid_map::GridMap buildZoneConstraintCostmap(
         grid_map::Length(max_x - min_x, max_y - min_y),
         0.1,
         grid_map::Position((min_x + max_x) / 2.0, (min_y + max_y) / 2.0));
-    coastmotionplanning::costs::ZoneConstraintsLayer::build(costmap, zones, search_boundary);
+    coastmotionplanning::costs::ZoneConstraintsLayer::build(costmap, selection);
     return costmap;
+}
+
+coastmotionplanning::costs::ZoneSelectionResult buildSelection(
+    const Pose2d& start,
+    const Pose2d& goal,
+    const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>>& zones,
+    const std::string& initial_behavior = "parking_profile",
+    const std::string& transition_behavior = "maneuver_to_track_profile") {
+    coastmotionplanning::costs::ZoneSelector selector;
+    return selector.select(
+        start,
+        goal,
+        zones,
+        0.0,
+        initial_behavior,
+        transition_behavior);
 }
 
 TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
@@ -131,15 +138,16 @@ TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
 
     EXPECT_EQ(primary.planner.max_planning_time_ms, 2000);
     EXPECT_DOUBLE_EQ(primary.planner.step_size_m, 0.5);
-    EXPECT_FALSE(primary.planner.only_forward_path);
+    EXPECT_TRUE(primary.planner.only_forward_path);
     EXPECT_DOUBLE_EQ(primary.planner.weight_gear_change, 4.0);
-    EXPECT_DOUBLE_EQ(primary.planner.min_path_len_in_same_motion, 1.0);
+    EXPECT_DOUBLE_EQ(primary.planner.min_path_len_in_same_motion, 5.0);
     EXPECT_TRUE(primary.planner.analytic_shot);
     EXPECT_DOUBLE_EQ(primary.planner.weight_lane_centerline, 1.0);
     EXPECT_DOUBLE_EQ(primary.costmap.resolution_m, 0.1);
     EXPECT_EQ(primary.motion_primitives.num_angle_bins, 72);
     EXPECT_EQ(primary.collision_checker.collision_mode, "strict");
     EXPECT_TRUE(primary.isLayerActive("combined_cost"));
+    EXPECT_TRUE(behavior_set.contains("maneuver_to_track_profile"));
 
     EXPECT_EQ(parking.planner.max_planning_time_ms, 100);
     EXPECT_DOUBLE_EQ(parking.planner.xy_grid_resolution_m, 0.05);
@@ -171,12 +179,21 @@ TEST(PlannerBehaviorResolverTest, KeepsCurrentBehaviorWhenSuccessorRemainsInCurr
     const auto other_zone = makeTrackZone(10.0, 0.0, 20.0, 10.0);
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         current_zone, other_zone};
-    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
+    const auto selection = buildSelection(makePose(5.0, 5.0), makePose(15.0, 5.0), zones);
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(selection);
 
     const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-        makePose(5.0, 5.0), costmap, current_zone, "parking_profile", zones, behavior_set);
+        makePose(5.0, 5.0),
+        costmap,
+        0,
+        current_zone,
+        "parking_profile",
+        selection.frontiers,
+        behavior_set);
 
     EXPECT_FALSE(resolved.switched_zone);
+    EXPECT_FALSE(resolved.switched_frontier);
+    EXPECT_EQ(resolved.frontier_id, 0u);
     EXPECT_EQ(resolved.zone, current_zone);
     EXPECT_EQ(resolved.behavior_name, "parking_profile");
     ASSERT_NE(resolved.profile, nullptr);
@@ -189,32 +206,50 @@ TEST(PlannerBehaviorResolverTest, SwitchesZoneButKeepsCurrentBehaviorWhenSuccess
     const auto other_zone = makeTrackZone(10.0, 0.0, 20.0, 10.0);
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         current_zone, other_zone};
-    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
+    const auto selection = buildSelection(makePose(5.0, 5.0), makePose(15.0, 5.0), zones);
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(selection);
 
     const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-        makePose(15.0, 5.0), costmap, current_zone, "parking_profile", zones, behavior_set);
+        makePose(15.0, 5.0),
+        costmap,
+        0,
+        current_zone,
+        "parking_profile",
+        selection.frontiers,
+        behavior_set);
 
     EXPECT_TRUE(resolved.switched_zone);
+    EXPECT_TRUE(resolved.switched_frontier);
+    EXPECT_EQ(resolved.frontier_id, 2u);
     EXPECT_EQ(resolved.zone, other_zone);
     EXPECT_EQ(resolved.behavior_name, "parking_profile");
     ASSERT_NE(resolved.profile, nullptr);
     EXPECT_EQ(resolved.profile->motion_primitives.num_angle_bins, 144);
 }
 
-TEST(PlannerBehaviorResolverTest, KeepsCurrentBehaviorInTransitionSpace) {
+TEST(PlannerBehaviorResolverTest, SwitchesToTransitionFrontierBehaviorInGapSpace) {
     const PlannerBehaviorSet behavior_set = loadBehaviorSet();
     const auto current_zone = makeManeuveringZone(0.0, 0.0, 10.0, 10.0);
     const auto other_zone = makeTrackZone(12.0, 0.0, 22.0, 10.0);
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         current_zone, other_zone};
-    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
+    const auto selection = buildSelection(makePose(5.0, 5.0), makePose(15.0, 5.0), zones);
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(selection);
 
     const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-        makePose(11.0, 5.0), costmap, current_zone, "parking_profile", zones, behavior_set);
+        makePose(11.0, 5.0),
+        costmap,
+        0,
+        current_zone,
+        "parking_profile",
+        selection.frontiers,
+        behavior_set);
 
     EXPECT_FALSE(resolved.switched_zone);
-    EXPECT_EQ(resolved.zone, current_zone);
-    EXPECT_EQ(resolved.behavior_name, "parking_profile");
+    EXPECT_TRUE(resolved.switched_frontier);
+    EXPECT_EQ(resolved.frontier_id, 1u);
+    EXPECT_EQ(resolved.zone, nullptr);
+    EXPECT_EQ(resolved.behavior_name, "maneuver_to_track_profile");
 }
 
 TEST(PlannerBehaviorResolverTest, ThrowsWhenResolvedZoneBehaviorIsMissingFromCatalog) {
@@ -223,11 +258,18 @@ TEST(PlannerBehaviorResolverTest, ThrowsWhenResolvedZoneBehaviorIsMissingFromCat
     const auto other_zone = makeTrackZone(10.0, 0.0, 20.0, 10.0, "missing_profile");
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         current_zone, other_zone};
-    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
+    const auto selection = buildSelection(makePose(5.0, 5.0), makePose(15.0, 5.0), zones);
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(selection);
 
     EXPECT_THROW(
         PlannerBehaviorResolver::resolve(
-            makePose(15.0, 5.0), costmap, current_zone, "parking_profile", zones, behavior_set),
+            makePose(15.0, 5.0),
+            costmap,
+            0,
+            current_zone,
+            "parking_profile",
+            selection.frontiers,
+            behavior_set),
         std::runtime_error);
 }
 
@@ -237,12 +279,24 @@ TEST(PlannerBehaviorResolverTest, OverlappingZonesPreserveFirstMatchOrdering) {
     const auto current_zone = makeTrackZone(2.0, 2.0, 8.0, 8.0);
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         first_zone, current_zone};
-    const grid_map::GridMap costmap = buildZoneConstraintCostmap(zones);
+    const auto selection = buildSelection(
+        makePose(3.0, 3.0),
+        makePose(7.0, 7.0),
+        zones,
+        "primary_profile");
+    const grid_map::GridMap costmap = buildZoneConstraintCostmap(selection);
 
     const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-        makePose(5.0, 5.0), costmap, current_zone, "primary_profile", zones, behavior_set);
+        makePose(5.0, 5.0),
+        costmap,
+        0,
+        current_zone,
+        "primary_profile",
+        selection.frontiers,
+        behavior_set);
 
     EXPECT_TRUE(resolved.switched_zone);
+    EXPECT_FALSE(resolved.switched_frontier);
     EXPECT_EQ(resolved.zone, first_zone);
     EXPECT_EQ(resolved.behavior_name, "primary_profile");
     ASSERT_NE(resolved.profile, nullptr);

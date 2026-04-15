@@ -5,6 +5,7 @@
 
 #include <grid_map_core/grid_map_core.hpp>
 #include "coastmotionplanning/costs/costmap_types.hpp"
+#include "coastmotionplanning/costs/zone_selector.hpp"
 #include "coastmotionplanning/geometry/shape_types.hpp"
 #include "coastmotionplanning/zones/zone.hpp"
 
@@ -17,11 +18,9 @@ class ZoneConstraintsLayer {
 public:
     /// Build the zone_constraints layer.
     /// @param costmap         The grid map to add the layer to
-    /// @param selected_zones  The zones selected for this planning query
-    /// @param search_boundary The concave hull search boundary
+    /// @param selection       The selected frontier descriptors and search boundary
     static void build(grid_map::GridMap& costmap,
-                      const std::vector<std::shared_ptr<zones::Zone>>& selected_zones,
-                      const geometry::Polygon2d& search_boundary);
+                      const ZoneSelectionResult& selection);
 };
 
 } // namespace costs

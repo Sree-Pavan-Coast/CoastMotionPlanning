@@ -73,6 +73,7 @@ TEST(PlannerBehaviorSetTest, LoadsNamedBehaviorsFromConfig) {
 
     EXPECT_TRUE(behavior_set.contains("primary_profile"));
     EXPECT_TRUE(behavior_set.contains("relaxed_profile"));
+    EXPECT_TRUE(behavior_set.contains("maneuver_to_track_profile"));
     EXPECT_TRUE(behavior_set.contains("parking_profile"));
     EXPECT_FALSE(behavior_set.contains("missing_profile"));
 }
@@ -151,6 +152,25 @@ TEST(BehaviorTreePlannerTest, StartZoneHintIsUsedWhenGoalHintIsMissing) {
     EXPECT_EQ(result.selected_profile, "parking_profile");
     ASSERT_EQ(result.attempted_profiles.size(), 1u);
     EXPECT_EQ(result.attempted_profiles[0], "parking_profile");
+}
+
+TEST(BehaviorTreePlannerTest, CrossZoneTrackRequestsInjectTransitionProfile) {
+    auto orchestrator = makeOrchestrator();
+
+    PlanningRequestContext request;
+    request.intent = PlanningIntent::NORMAL;
+    request.start_zone = makeManeuveringZone("primary_profile");
+    request.goal_zone = makeTrackZone("track_main_road_profile");
+
+    const BehaviorTreePlanResult result = orchestrator.run(
+        request,
+        [](const PlanningAttempt& attempt) {
+            EXPECT_EQ(attempt.profile, "primary_profile");
+            EXPECT_EQ(attempt.transition_profile, "maneuver_to_track_profile");
+            return PlannerRunResult{true, "planned"};
+        });
+
+    EXPECT_TRUE(result.success);
 }
 
 TEST(BehaviorTreePlannerTest, RelaxedProfileDoesNotRetryAgain) {

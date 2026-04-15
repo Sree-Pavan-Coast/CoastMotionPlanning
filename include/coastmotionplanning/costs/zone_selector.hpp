@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "coastmotionplanning/costs/costmap_types.hpp"
@@ -11,9 +13,24 @@
 namespace coastmotionplanning {
 namespace costs {
 
+enum class SearchFrontierRole {
+    StartZone,
+    Transition,
+    GoalZone
+};
+
+struct SearchFrontierDescriptor {
+    size_t frontier_id{0};
+    SearchFrontierRole role{SearchFrontierRole::StartZone};
+    std::shared_ptr<zones::Zone> zone;
+    std::string behavior_name;
+    std::optional<size_t> next_frontier_id;
+};
+
 /// Result of zone selection for a planning query
 struct ZoneSelectionResult {
     std::vector<std::shared_ptr<zones::Zone>> selected_zones;
+    std::vector<SearchFrontierDescriptor> frontiers;
     geometry::Polygon2d search_boundary;  // Concave hull encompassing selected zones
 };
 
@@ -34,7 +51,9 @@ public:
         const math::Pose2d& start,
         const math::Pose2d& goal,
         const std::vector<std::shared_ptr<zones::Zone>>& all_zones,
-        double alpha = 0.0) const;
+        double alpha = 0.0,
+        const std::string& start_frontier_behavior = "",
+        const std::string& transition_frontier_behavior = "") const;
 
     /// Determine which zone a position falls inside.
     /// @return shared_ptr to the zone, or nullptr if not inside any zone

@@ -102,8 +102,7 @@ grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
 
     // ---- Step 5: Zone Constraints ----
     t = Clock::now();
-    ZoneConstraintsLayer::build(costmap_, selection.selected_zones,
-                                 selection.search_boundary);
+    ZoneConstraintsLayer::build(costmap_, selection);
     recordTiming("costmap.zone_constraints_layer", t, profiler_);
 
     // ---- Step 6: Lane Centerline ----

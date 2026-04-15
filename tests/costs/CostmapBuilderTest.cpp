@@ -130,7 +130,7 @@ TEST_F(CostmapBuilderTest, ZoneConstraintsCorrect) {
     // Point in track road zone (zone index 1 — second selected zone)
     grid_map::Position track_pos(50.0, 2.5);
     zc = costmap.atPosition(costs::CostmapLayerNames::ZONE_CONSTRAINTS, track_pos);
-    EXPECT_FLOAT_EQ(zc, 1.0f);  // zone_b is the second selected zone
+    EXPECT_FLOAT_EQ(zc, 2.0f);  // zone_b is the goal frontier when a transition frontier exists
 }
 
 TEST_F(CostmapBuilderTest, GapBetweenZonesBecomesDrivableTransitionSpace) {
@@ -157,7 +157,7 @@ TEST_F(CostmapBuilderTest, GapBetweenZonesBecomesDrivableTransitionSpace) {
     const float static_cost =
         costmap.atPosition(costs::CostmapLayerNames::STATIC_OBSTACLES, gap_pos);
 
-    EXPECT_FLOAT_EQ(zone_value, costs::ZoneConstraintValues::ZONE_TRANSITION);
+    EXPECT_FLOAT_EQ(zone_value, 1.0f);
     EXPECT_FLOAT_EQ(static_cost, costs::CostValues::FREE_SPACE);
     EXPECT_LT(combined_cost, costs::CostValues::LETHAL);
 }

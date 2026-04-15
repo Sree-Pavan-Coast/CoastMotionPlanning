@@ -89,8 +89,8 @@ TEST(PlannerVisualizerServerTest, MapLoadAndPlanEndpointsWorkEndToEnd) {
         json{
             {"map_id", load_body.at("map_id").get<std::string>()},
             {"robot_name", "E_Transit"},
-            {"start", {{"x", 2.0}, {"y", 0.0}, {"heading_deg", 0.0}}},
-            {"goal", {{"x", 7.0}, {"y", 0.0}, {"heading_deg", 0.0}}}
+            {"start", {{"x", 2.0}, {"y", -1.5}, {"heading_deg", 0.0}}},
+            {"goal", {{"x", 6.5}, {"y", -1.5}, {"heading_deg", 0.0}}}
         }.dump(),
         "application/json");
 

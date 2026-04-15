@@ -45,6 +45,8 @@ struct PlannerAnalyticDebugEvent {
 struct PlannerExpansionDebugEvent {
     size_t expansion_index{0};
     size_t node_index{0};
+    size_t frontier_id{0};
+    std::string frontier_role;
     math::Pose2d pose;
     std::string zone_name;
     std::string behavior_name;
@@ -63,8 +65,31 @@ struct PlannerExpansionDebugEvent {
     std::vector<PlannerPrimitiveDebugEvent> primitive_events;
 };
 
+struct PlannerFrontierDebugSummary {
+    size_t frontier_id{0};
+    std::string frontier_role;
+    std::string zone_name;
+    std::string behavior_name;
+    uint64_t enqueued{0};
+    uint64_t popped{0};
+    uint64_t stale_entries_skipped{0};
+    size_t closed_set_size{0};
+    size_t open_queue_peak_size{0};
+    double first_enqueue_ms{-1.0};
+    double first_pop_ms{-1.0};
+    std::vector<common::ProfilingScopeSummary> profiling_scopes;
+};
+
+struct PlannerFrontierHandoffDebugSummary {
+    size_t from_frontier_id{0};
+    size_t to_frontier_id{0};
+    uint64_t transfer_count{0};
+    double first_transfer_ms{-1.0};
+};
+
 struct HybridAStarPlannerDebugTrace {
     std::string initial_behavior_name;
+    std::string transition_behavior_name;
     std::string start_zone_name;
     std::string goal_zone_name;
     std::vector<std::string> selected_zone_names;
@@ -101,6 +126,8 @@ struct HybridAStarPlannerDebugTrace {
     uint64_t primitive_enqueued{0};
     std::string terminal_reason;
     std::vector<common::ProfilingScopeSummary> profiling_scopes;
+    std::vector<PlannerFrontierDebugSummary> frontier_summaries;
+    std::vector<PlannerFrontierHandoffDebugSummary> frontier_handoffs;
     std::vector<PlannerExpansionDebugEvent> expansions;
 };
 
@@ -108,6 +135,7 @@ struct HybridAStarPlannerRequest {
     math::Pose2d start;
     math::Pose2d goal;
     std::string initial_behavior_name;
+    std::string transition_behavior_name;
     std::string dual_model_lut_path;
 };
 

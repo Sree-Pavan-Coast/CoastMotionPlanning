@@ -99,15 +99,15 @@ PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
     if (primary_profile_pos == std::string::npos) {
         throw std::runtime_error("Failed to locate primary_profile in planner_behaviors.yaml");
     }
-    const std::string only_forward_false = "      only_forward_path: false";
-    const size_t only_forward_pos = behaviors.find(only_forward_false, primary_profile_pos);
+    const std::string only_forward_line = "      only_forward_path: true";
+    const size_t only_forward_pos = behaviors.find(only_forward_line, primary_profile_pos);
     if (only_forward_pos == std::string::npos) {
         throw std::runtime_error(
             "Failed to locate primary_profile.only_forward_path in planner_behaviors.yaml");
     }
     behaviors.replace(
         only_forward_pos,
-        only_forward_false.size(),
+        only_forward_line.size(),
         std::string("      only_forward_path: ") + (only_forward_path ? "true" : "false"));
 
     const size_t min_same_motion_key_pos = behaviors.find(
@@ -234,9 +234,11 @@ TEST(HybridAStarPlannerPolicyTest, TrackRoadWithoutForwardOnlyProfileAllowsRever
     const PlannerBehaviorSet behavior_set = loadBehaviorSet();
     const auto track_zone = makeTrackZone(0.0, -4.0, 10.0, 4.0);
     const ResolvedPlannerBehavior resolved{
+        0,
         track_zone,
-        "primary_profile",
-        &behavior_set.get("primary_profile"),
+        "parking_profile",
+        &behavior_set.get("parking_profile"),
+        false,
         false
     };
 
@@ -255,9 +257,11 @@ TEST(HybridAStarPlannerPolicyTest, ReverseAllowedZonesUseReedsSheppAndAllowRever
     const PlannerBehaviorSet behavior_set = loadBehaviorSet();
     const auto maneuvering_zone = makeManeuveringZone(0.0, -4.0, 10.0, 4.0);
     const ResolvedPlannerBehavior resolved{
+        0,
         maneuvering_zone,
         "parking_profile",
         &behavior_set.get("parking_profile"),
+        false,
         false
     };
 
@@ -276,9 +280,11 @@ TEST(HybridAStarPlannerPolicyTest, OnlyForwardProfilePrunesReverseEvenInManeuver
     forward_only_profile.planner.only_forward_path = true;
 
     const ResolvedPlannerBehavior resolved{
+        0,
         maneuvering_zone,
         "custom_forward_only",
         &forward_only_profile,
+        false,
         false
     };
 
@@ -450,8 +456,9 @@ TEST(HybridAStarPlannerTest, GoalMustAllowMinimumSameMotionLengthBeforeStopping)
 }
 
 TEST(HybridAStarPlannerTest, AnalyticExpansionOutputHonorsMinimumSameMotionLength) {
-    const PlannerBehaviorSet behavior_set =
+    auto behavior_set =
         loadCustomPrimaryProfileBehaviorSet(false, 5.0, "Pro_XD");
+    behavior_set.setMinimumPlanningTimeMs(5000);
     const Car car = makeCar();
     std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         makeManeuveringZone(-5.0, -5.0, 15.0, 20.0, "primary_profile")

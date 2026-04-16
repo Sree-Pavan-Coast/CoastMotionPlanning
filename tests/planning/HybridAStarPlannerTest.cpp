@@ -70,17 +70,63 @@ std::string readFile(const std::string& path) {
     return buffer.str();
 }
 
+size_t findBehaviorProfileStart(const std::string& yaml, const std::string& profile_name) {
+    const std::string profile_header = "  " + profile_name + ":\n";
+    const size_t profile_pos = yaml.find(profile_header);
+    if (profile_pos == std::string::npos) {
+        throw std::runtime_error("Failed to locate " + profile_name +
+                                 " in planner_behaviors.yaml");
+    }
+    return profile_pos;
+}
+
+size_t findBehaviorProfileEnd(const std::string& yaml, size_t profile_pos) {
+    size_t search_pos = profile_pos + 1;
+    while (true) {
+        const size_t candidate_pos = yaml.find("\n  ", search_pos);
+        if (candidate_pos == std::string::npos) {
+            return yaml.size();
+        }
+
+        const size_t next_char_pos = candidate_pos + 3;
+        if (next_char_pos < yaml.size() && yaml[next_char_pos] != ' ') {
+            return candidate_pos + 1;
+        }
+        search_pos = candidate_pos + 1;
+    }
+}
+
+void replaceBehaviorProfileScalar(std::string& yaml,
+                                  const std::string& profile_name,
+                                  const std::string& key,
+                                  const std::string& value) {
+    const size_t profile_pos = findBehaviorProfileStart(yaml, profile_name);
+    const size_t profile_end = findBehaviorProfileEnd(yaml, profile_pos);
+    const std::string key_prefix = "      " + key + ":";
+    const size_t key_pos = yaml.find(key_prefix, profile_pos);
+    if (key_pos == std::string::npos || key_pos >= profile_end) {
+        throw std::runtime_error("Failed to locate " + profile_name + "." + key +
+                                 " in planner_behaviors.yaml");
+    }
+
+    const size_t line_end = yaml.find('\n', key_pos);
+    if (line_end == std::string::npos) {
+        throw std::runtime_error("Failed to locate end of " + profile_name + "." + key +
+                                 " line.");
+    }
+
+    yaml.replace(key_pos, line_end - key_pos, "      " + key + ": " + value);
+}
+
 PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
                                                        double min_same_motion_length_m,
                                                        const std::string& robot_name = "E_Transit",
-                                                       bool debug_mode = false) {
+                                                       bool debug_mode = false,
+                                                       double min_goal_straight_approach_m = 0.0,
+                                                       int max_planning_time_ms = -1) {
     const std::filesystem::path temp_dir =
         std::filesystem::temp_directory_path() / "coastmotionplanning_hybrid_astar_test";
     std::filesystem::create_directories(temp_dir);
-
-    std::ofstream master_file(temp_dir / "master_params.yaml");
-    master_file << readFile(repoPath("configs/master_params.yaml"));
-    master_file.close();
 
     std::string behaviors = readFile(repoPath("configs/planner_behaviors.yaml"));
     const std::string debug_mode_disabled = "  debug_mode: false";
@@ -95,46 +141,28 @@ PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
             debug_mode_disabled.size(),
             "  debug_mode: true");
     }
-    const size_t primary_profile_pos = behaviors.find("  primary_profile:\n");
-    if (primary_profile_pos == std::string::npos) {
-        throw std::runtime_error("Failed to locate primary_profile in planner_behaviors.yaml");
+    replaceBehaviorProfileScalar(
+        behaviors,
+        "primary_profile",
+        "only_forward_path",
+        only_forward_path ? "true" : "false");
+    replaceBehaviorProfileScalar(
+        behaviors,
+        "primary_profile",
+        "min_path_len_in_same_motion",
+        std::to_string(min_same_motion_length_m));
+    replaceBehaviorProfileScalar(
+        behaviors,
+        "primary_profile",
+        "min_goal_straight_approach_m",
+        std::to_string(min_goal_straight_approach_m));
+    if (max_planning_time_ms > 0) {
+        replaceBehaviorProfileScalar(
+            behaviors,
+            "primary_profile",
+            "max_planning_time_ms",
+            std::to_string(max_planning_time_ms));
     }
-    const std::string only_forward_line = "      only_forward_path: true";
-    const size_t only_forward_pos = behaviors.find(only_forward_line, primary_profile_pos);
-    if (only_forward_pos == std::string::npos) {
-        throw std::runtime_error(
-            "Failed to locate primary_profile.only_forward_path in planner_behaviors.yaml");
-    }
-    behaviors.replace(
-        only_forward_pos,
-        only_forward_line.size(),
-        std::string("      only_forward_path: ") + (only_forward_path ? "true" : "false"));
-
-    const size_t min_same_motion_key_pos = behaviors.find(
-        "      min_path_len_in_same_motion:",
-        primary_profile_pos);
-    if (min_same_motion_key_pos == std::string::npos) {
-        throw std::runtime_error(
-            "Failed to locate primary_profile.min_path_len_in_same_motion in planner_behaviors.yaml");
-    }
-    const size_t min_same_motion_line_end =
-        behaviors.find('\n', min_same_motion_key_pos);
-    if (min_same_motion_line_end == std::string::npos) {
-        throw std::runtime_error(
-            "Failed to locate end of primary_profile.min_path_len_in_same_motion line.");
-    }
-    const std::string current_min_same_motion = behaviors.substr(
-        min_same_motion_key_pos,
-        min_same_motion_line_end - min_same_motion_key_pos);
-    const size_t min_same_motion_pos = behaviors.find(current_min_same_motion, primary_profile_pos);
-    if (min_same_motion_pos == std::string::npos) {
-        throw std::runtime_error(
-            "Failed to locate primary_profile.min_path_len_in_same_motion in planner_behaviors.yaml");
-    }
-    behaviors.replace(
-        min_same_motion_pos,
-        current_min_same_motion.size(),
-        "      min_path_len_in_same_motion: " + std::to_string(min_same_motion_length_m));
 
     std::ofstream behavior_file(temp_dir / "planner_behaviors.yaml");
     behavior_file << behaviors;
@@ -453,6 +481,54 @@ TEST(HybridAStarPlannerTest, GoalMustAllowMinimumSameMotionLengthBeforeStopping)
         [](coastmotionplanning::common::MotionDirection direction) {
             return direction == coastmotionplanning::common::MotionDirection::Forward;
         }));
+}
+
+TEST(HybridAStarPlannerTest, GoalStraightApproachRequirementPublishesImmediatelyWhenMet) {
+    const PlannerBehaviorSet behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(false, 1.0, "Pro_XD", false, 2.0);
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -4.0, 12.0, 4.0)
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(2.0, 0.0, 0.0);
+    request.goal = makePose(7.0, 0.0, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    EXPECT_EQ(result.segment_directions.size(), result.poses.size() - 1);
+    EXPECT_EQ(
+        result.detail.find("Returned best goal candidate after"),
+        std::string::npos);
+}
+
+TEST(HybridAStarPlannerTest, ReturnsBestGoalCandidateWhenGoalStraightApproachIsUnmet) {
+    const PlannerBehaviorSet behavior_set =
+        loadCustomPrimaryProfileBehaviorSet(false, 1.0, "Pro_XD", false, 50.0, 200);
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -4.0, 12.0, 4.0)
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(2.0, 0.0, 0.0);
+    request.goal = makePose(7.0, 0.0, 0.0);
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    EXPECT_NE(
+        result.detail.find("Returned best goal candidate after"),
+        std::string::npos);
+    EXPECT_NE(
+        result.detail.find("planner.min_goal_straight_approach_m=50"),
+        std::string::npos);
 }
 
 TEST(HybridAStarPlannerTest, AnalyticExpansionOutputHonorsMinimumSameMotionLength) {

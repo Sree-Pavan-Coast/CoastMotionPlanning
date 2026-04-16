@@ -26,6 +26,7 @@ struct PlannerBehaviorPlannerConfig {
     double analytic_expansion_max_length_m{0.0};
     double analytic_expansion_ratio{0.0};
     double min_path_len_in_same_motion{0.0};
+    double min_goal_straight_approach_m{0.0};
     bool analytic_shot{true};
     bool near_goal_analytic_expansion{false};
     double near_goal_analytic_radius_m{0.0};

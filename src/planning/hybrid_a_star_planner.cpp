@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -47,8 +48,8 @@ using motion_primitives::MotionTableConfig;
 using motion_primitives::TurnDirection;
 
 constexpr double LARGE_COST = 1e9;
-constexpr double MOTION_EPSILON = 1e-6;
-
+constexpr double kTerminalStraightYawDeltaToleranceRad = 1e-3;
+constexpr double kTerminalStraightAlignmentToleranceRad = 5e-2;
 enum class TurnClass {
     UNKNOWN = 0,
     STRAIGHT,
@@ -186,6 +187,14 @@ struct SharedPlannerResult {
     bool published{false};
 };
 
+struct GoalCandidate {
+    HybridAStarPlannerResult result;
+    double terminal_straight_approach_m{0.0};
+    double required_straight_approach_m{0.0};
+    double path_cost{std::numeric_limits<double>::infinity()};
+    bool valid{false};
+};
+
 bool canChangeMotionDirection(const SearchNode& node,
                               common::MotionDirection successor_motion);
 double computeNextSameMotionLength(const SearchNode& parent,
@@ -254,8 +263,8 @@ DiscreteStateKey discretizeState(const math::Pose2d& pose,
                                  double xy_resolution_m,
                                  double global_max_same_motion_length_m) {
     const auto discretizeMetric = [&](double value) {
-        if (global_max_same_motion_length_m <= MOTION_EPSILON ||
-            xy_resolution_m <= MOTION_EPSILON) {
+        if (global_max_same_motion_length_m <= common::EPSILON ||
+            xy_resolution_m <= common::EPSILON) {
             return 0;
         }
         const double capped = std::clamp(value, 0.0, global_max_same_motion_length_m);
@@ -473,7 +482,7 @@ bool canChangeMotionDirection(const SearchNode& node,
                               common::MotionDirection successor_motion) {
     return !node.has_inbound_motion ||
            node.inbound_motion == successor_motion ||
-           node.same_motion_remaining_to_change_m <= MOTION_EPSILON;
+           node.same_motion_remaining_to_change_m <= common::EPSILON;
 }
 
 double computeNextSameMotionLength(const SearchNode& parent,
@@ -484,7 +493,7 @@ double computeNextSameMotionLength(const SearchNode& parent,
         (!parent.has_inbound_motion || parent.inbound_motion != successor_motion)
         ? travel_m
         : parent.same_motion_length_m + travel_m;
-    if (global_max_same_motion_length_m <= MOTION_EPSILON) {
+    if (global_max_same_motion_length_m <= common::EPSILON) {
         return 0.0;
     }
     return std::min(unclamped_length, global_max_same_motion_length_m);
@@ -514,7 +523,7 @@ double computeNextSameMotionRemainingToChange(
 
 bool isTerminalMotionSegmentValid(const SearchNode& node) {
     return !node.has_inbound_motion ||
-           node.same_motion_remaining_to_change_m <= MOTION_EPSILON;
+           node.same_motion_remaining_to_change_m <= common::EPSILON;
 }
 
 bool allowsReverseMotion(const PlannerBehaviorProfile& profile,
@@ -526,30 +535,6 @@ bool allowsReverseMotion(const PlannerBehaviorProfile& profile,
 bool allowsReverseMotion(const ResolvedPlannerBehavior& resolved_behavior) {
     return resolved_behavior.profile != nullptr &&
            allowsReverseMotion(*resolved_behavior.profile, resolved_behavior.zone);
-}
-
-common::MotionDirection inferAnalyticMotionDirection(
-    const std::array<double, 3>& from,
-    const std::array<double, 3>& to,
-    common::MotionDirection fallback_direction) {
-    const double dx = to[0] - from[0];
-    const double dy = to[1] - from[1];
-    const double distance = std::hypot(dx, dy);
-    if (distance <= MOTION_EPSILON) {
-        return fallback_direction;
-    }
-
-    const double start_projection = dx * std::cos(from[2]) + dy * std::sin(from[2]);
-    const double end_projection = dx * std::cos(to[2]) + dy * std::sin(to[2]);
-    const double mean_projection = 0.5 * (start_projection + end_projection);
-    const double projection_threshold = std::max(MOTION_EPSILON, distance * 1e-3);
-    if (mean_projection > projection_threshold) {
-        return common::MotionDirection::Forward;
-    }
-    if (mean_projection < -projection_threshold) {
-        return common::MotionDirection::Reverse;
-    }
-    return fallback_direction;
 }
 
 AnalyticPathValidationResult validateAnalyticPathSegments(
@@ -578,8 +563,12 @@ AnalyticPathValidationResult validateAnalyticPathSegments(
         }
 
         const double travel_m = std::hypot(to[0] - from[0], to[1] - from[1]);
-        const common::MotionDirection step_motion = inferAnalyticMotionDirection(
-            from, to, fallback_direction);
+        const math::Pose2d from_pose(
+            from[0], from[1], math::Angle::from_radians(from[2]));
+        const math::Pose2d to_pose(
+            to[0], to[1], math::Angle::from_radians(to[2]));
+        const common::MotionDirection step_motion =
+            from_pose.inferMotionDirectionTo(to_pose, fallback_direction);
 
         if (step_motion == common::MotionDirection::Reverse &&
             !allowsReverseMotion(*successor_resolution.profile, successor_resolution.zone)) {
@@ -606,8 +595,7 @@ AnalyticPathValidationResult validateAnalyticPathSegments(
         simulated_node.inbound_motion = step_motion;
         simulated_node.zone = successor_resolution.zone;
         simulated_node.behavior_name = successor_resolution.behavior_name;
-        simulated_node.pose = math::Pose2d(
-            to[0], to[1], math::Angle::from_radians(to[2]));
+        simulated_node.pose = to_pose;
 
         fallback_direction = step_motion;
         result.segment_directions.push_back(step_motion);
@@ -618,6 +606,107 @@ AnalyticPathValidationResult validateAnalyticPathSegments(
         result.segment_directions.clear();
     }
     return result;
+}
+
+bool isPoseSegmentStraightEnough(const math::Pose2d& from,
+                                 const math::Pose2d& to,
+                                 common::MotionDirection direction) {
+    const double yaw_delta =
+        std::abs(normalizeAngleSigned(to.theta.radians() - from.theta.radians()));
+    if (yaw_delta > kTerminalStraightYawDeltaToleranceRad) {
+        return false;
+    }
+
+    const double dx = to.x - from.x;
+    const double dy = to.y - from.y;
+    if (std::hypot(dx, dy) <= common::EPSILON) {
+        return false;
+    }
+
+    double expected_heading = from.theta.radians();
+    if (direction == common::MotionDirection::Reverse) {
+        expected_heading = normalizeAngleSigned(expected_heading + common::PI);
+    }
+
+    const double segment_heading = std::atan2(dy, dx);
+    const double alignment_error =
+        std::abs(normalizeAngleSigned(segment_heading - expected_heading));
+    return alignment_error <= kTerminalStraightAlignmentToleranceRad;
+}
+
+double computeTerminalStraightApproachLength(
+    const std::vector<math::Pose2d>& poses,
+    const std::vector<common::MotionDirection>& segment_directions) {
+    if (poses.size() < 2 || segment_directions.size() + 1 != poses.size()) {
+        return 0.0;
+    }
+
+    const common::MotionDirection terminal_direction = segment_directions.back();
+    double straight_length_m = 0.0;
+    for (size_t i = segment_directions.size(); i-- > 0;) {
+        if (segment_directions[i] != terminal_direction) {
+            break;
+        }
+        if (!isPoseSegmentStraightEnough(poses[i], poses[i + 1], segment_directions[i])) {
+            break;
+        }
+        straight_length_m += std::hypot(
+            poses[i + 1].x - poses[i].x,
+            poses[i + 1].y - poses[i].y);
+    }
+    return straight_length_m;
+}
+
+double goalCandidateProgress(const GoalCandidate& candidate) {
+    if (!candidate.valid) {
+        return -1.0;
+    }
+    if (candidate.required_straight_approach_m <= common::EPSILON) {
+        return 1.0;
+    }
+    return candidate.terminal_straight_approach_m /
+        candidate.required_straight_approach_m;
+}
+
+bool shouldReplaceGoalCandidate(const GoalCandidate& current_best,
+                                const GoalCandidate& candidate) {
+    if (!candidate.valid) {
+        return false;
+    }
+    if (!current_best.valid) {
+        return true;
+    }
+
+    const double current_progress = goalCandidateProgress(current_best);
+    const double candidate_progress = goalCandidateProgress(candidate);
+    if (candidate_progress > current_progress + 1e-6) {
+        return true;
+    }
+    if (candidate_progress + 1e-6 < current_progress) {
+        return false;
+    }
+
+    if (candidate.terminal_straight_approach_m >
+        current_best.terminal_straight_approach_m + 1e-6) {
+        return true;
+    }
+    if (candidate.terminal_straight_approach_m + 1e-6 <
+        current_best.terminal_straight_approach_m) {
+        return false;
+    }
+
+    return candidate.path_cost + 1e-6 < current_best.path_cost;
+}
+
+std::string buildGoalCandidateFallbackDetail(const GoalCandidate& candidate,
+                                             const std::string& reason) {
+    std::ostringstream detail;
+    detail << candidate.result.detail << " Returned best goal candidate after " << reason
+           << " without meeting planner.min_goal_straight_approach_m="
+           << candidate.required_straight_approach_m << " m"
+           << " (best terminal straight approach="
+           << candidate.terminal_straight_approach_m << " m).";
+    return detail.str();
 }
 
 bool isGoalSatisfied(const SearchNode& node,
@@ -1019,6 +1108,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     std::mutex scheduler_mutex;
     std::condition_variable scheduler_cv;
     SharedPlannerResult shared_result;
+    GoalCandidate best_goal_candidate;
     std::string success_terminal_reason;
 
     std::atomic<bool> success_found{false};
@@ -1056,6 +1146,41 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 elapsedMilliseconds(search_loop_start_time, Clock::now());
         }
     };
+
+    const auto considerGoalCandidate =
+        [&](HybridAStarPlannerResult result,
+            double path_cost,
+            double required_straight_approach_m) {
+            GoalCandidate candidate;
+            candidate.result = std::move(result);
+            candidate.path_cost = path_cost;
+            candidate.required_straight_approach_m = required_straight_approach_m;
+            candidate.terminal_straight_approach_m = computeTerminalStraightApproachLength(
+                candidate.result.poses,
+                candidate.result.segment_directions);
+            candidate.valid = candidate.result.success;
+
+            const bool strict_requirement_enabled =
+                required_straight_approach_m > common::EPSILON;
+            const bool meets_requirement =
+                !strict_requirement_enabled ||
+                candidate.terminal_straight_approach_m + 1e-6 >=
+                    required_straight_approach_m;
+
+            std::lock_guard<std::mutex> result_lock(result_mutex);
+            if (meets_requirement) {
+                if (!shared_result.published) {
+                    shared_result.result = std::move(candidate.result);
+                    shared_result.published = true;
+                }
+                return true;
+            }
+
+            if (shouldReplaceGoalCandidate(best_goal_candidate, candidate)) {
+                best_goal_candidate = std::move(candidate);
+            }
+            return false;
+        };
 
     const auto enqueueSuccessor =
         [&](size_t destination_frontier_id,
@@ -1106,6 +1231,8 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     struct AnalyticAttemptOutcome {
         HybridAStarPlannerResult result;
         PlannerAnalyticDebugEvent debug_event;
+        double required_straight_approach_m{0.0};
+        double path_cost{std::numeric_limits<double>::infinity()};
     };
 
     const auto worker = [&](size_t frontier_index) {
@@ -1128,7 +1255,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 outcome.debug_event.detail = "no_ompl_spaces";
                 return outcome;
             }
-            if (node.same_motion_remaining_to_change_m > MOTION_EPSILON) {
+            if (node.same_motion_remaining_to_change_m > common::EPSILON) {
                 outcome.debug_event.outcome = "failed";
                 outcome.debug_event.detail = "same_motion_guard";
                 return outcome;
@@ -1274,6 +1401,11 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 result.segment_directions = std::move(prefix_directions);
             }
             result.detail = "Path found (analytic expansion).";
+            outcome.required_straight_approach_m =
+                wp_resolutions.back().profile != nullptr
+                    ? wp_resolutions.back().profile->planner.min_goal_straight_approach_m
+                    : 0.0;
+            outcome.path_cost = node.g + path_length;
             outcome.result = std::move(result);
             outcome.debug_event.outcome = "success";
             return outcome;
@@ -1386,22 +1518,20 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                         static_cast<int>(entry.node_index),
                         &frontier.profiling_collector);
                 }
-                {
-                    std::lock_guard<std::mutex> result_lock(result_mutex);
-                    if (!shared_result.published) {
-                        shared_result.result = std::move(result);
-                        shared_result.published = true;
-                        success_terminal_reason = "goal_satisfied";
+                if (considerGoalCandidate(
+                        std::move(result),
+                        current_node.g,
+                        current_profile.planner.min_goal_straight_approach_m)) {
+                    success_terminal_reason = "goal_satisfied";
+                    if (debug_trace != nullptr) {
+                        frontier.expansion_events.push_back(std::move(expansion_debug));
                     }
+                    success_found.store(true);
+                    shutdown.store(true);
+                    active_workers.fetch_sub(1);
+                    scheduler_cv.notify_all();
+                    return;
                 }
-                if (debug_trace != nullptr) {
-                    frontier.expansion_events.push_back(std::move(expansion_debug));
-                }
-                success_found.store(true);
-                shutdown.store(true);
-                active_workers.fetch_sub(1);
-                scheduler_cv.notify_all();
-                return;
             }
 
             ++local_expansion_count;
@@ -1428,23 +1558,21 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     expansion_debug.analytic_event = analytic_outcome.debug_event;
                 }
                 if (analytic_outcome.result.success) {
-                    ++frontier.counters.analytic_successes;
-                    {
-                        std::lock_guard<std::mutex> result_lock(result_mutex);
-                        if (!shared_result.published) {
-                            shared_result.result = analytic_outcome.result;
-                            shared_result.published = true;
-                            success_terminal_reason = "analytic_expansion_success";
+                    if (considerGoalCandidate(
+                            std::move(analytic_outcome.result),
+                            analytic_outcome.path_cost,
+                            analytic_outcome.required_straight_approach_m)) {
+                        ++frontier.counters.analytic_successes;
+                        success_terminal_reason = "analytic_expansion_success";
+                        if (debug_trace != nullptr) {
+                            frontier.expansion_events.push_back(std::move(expansion_debug));
                         }
+                        success_found.store(true);
+                        shutdown.store(true);
+                        active_workers.fetch_sub(1);
+                        scheduler_cv.notify_all();
+                        return;
                     }
-                    if (debug_trace != nullptr) {
-                        frontier.expansion_events.push_back(std::move(expansion_debug));
-                    }
-                    success_found.store(true);
-                    shutdown.store(true);
-                    active_workers.fetch_sub(1);
-                    scheduler_cv.notify_all();
-                    return;
                 }
                 if (analytic_outcome.debug_event.detail == "no_ompl_spaces") {
                     ++frontier.counters.analytic_fail_no_ompl;
@@ -1826,6 +1954,32 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             debug_trace->terminal_reason = success_terminal_reason;
         }
         return finalizeResult(shared_result.result, nodes, total_queue_peak_size.load());
+    }
+
+    if (best_goal_candidate.valid) {
+        if (deadline_hit.load()) {
+            best_goal_candidate.result.detail = buildGoalCandidateFallbackDetail(
+                best_goal_candidate,
+                "timeout");
+            if (debug_trace != nullptr) {
+                debug_trace->terminal_reason =
+                    "Returned best goal candidate after timeout because strict goal "
+                    "straight-approach requirement was not met.";
+            }
+        } else {
+            best_goal_candidate.result.detail = buildGoalCandidateFallbackDetail(
+                best_goal_candidate,
+                "frontier exhaustion");
+            if (debug_trace != nullptr) {
+                debug_trace->terminal_reason =
+                    "Returned best goal candidate after frontier exhaustion because strict "
+                    "goal straight-approach requirement was not met.";
+            }
+        }
+        return finalizeResult(
+            best_goal_candidate.result,
+            nodes,
+            total_queue_peak_size.load());
     }
 
     if (deadline_hit.load()) {

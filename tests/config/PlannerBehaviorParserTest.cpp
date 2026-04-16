@@ -10,7 +10,7 @@ using namespace coastmotionplanning::config;
 
 namespace {
 
-std::string masterYaml() {
+std::string schemaYaml() {
     return
         "planner:\n"
         "  max_planning_time_ms: 100\n"
@@ -26,6 +26,7 @@ std::string masterYaml() {
         "  analytic_expansion_max_length_m: 20.0\n"
         "  analytic_expansion_ratio: 0.35\n"
         "  min_path_len_in_same_motion: 1.0\n"
+        "  min_goal_straight_approach_m: 0.0\n"
         "  analytic_shot: true\n"
         "  near_goal_analytic_expansion: false\n"
         "  near_goal_analytic_radius_m: 0.0\n"
@@ -53,8 +54,31 @@ std::string masterYaml() {
         "  hitch_angle_penalty_factor: 2.0\n";
 }
 
+std::string indentYaml(const std::string& yaml, int spaces) {
+    const std::string indent(static_cast<size_t>(spaces), ' ');
+    std::string indented;
+    size_t line_start = 0;
+    while (line_start < yaml.size()) {
+        size_t line_end = yaml.find('\n', line_start);
+        if (line_end == std::string::npos) {
+            line_end = yaml.size();
+        }
+
+        indented += indent;
+        indented += yaml.substr(line_start, line_end - line_start);
+        indented += '\n';
+        line_start = line_end + 1;
+    }
+    return indented;
+}
+
+std::string schemaSectionYaml() {
+    return "schema:\n" + indentYaml(schemaYaml(), 2);
+}
+
 std::string validBehaviorYaml() {
     return
+        schemaSectionYaml() +
         "global:\n"
         "  debug_mode: true\n"
         "behaviors:\n"
@@ -73,6 +97,7 @@ std::string validBehaviorYaml() {
         "      analytic_expansion_max_length_m: 20.0\n"
         "      analytic_expansion_ratio: 0.35\n"
         "      min_path_len_in_same_motion: 1.0\n"
+        "      min_goal_straight_approach_m: 2.5\n"
         "      analytic_shot: true\n"
         "      near_goal_analytic_expansion: false\n"
         "      near_goal_analytic_radius_m: 0.0\n"
@@ -104,6 +129,7 @@ std::string validBehaviorYaml() {
 
 std::string missingBehaviorYaml() {
     return
+        schemaSectionYaml() +
         "behaviors:\n"
         "  primary_profile:\n"
         "    planner:\n"
@@ -119,6 +145,7 @@ std::string missingBehaviorYaml() {
         "      analytic_expansion_max_length_m: 20.0\n"
         "      analytic_expansion_ratio: 0.35\n"
         "      min_path_len_in_same_motion: 1.0\n"
+        "      min_goal_straight_approach_m: 0.0\n"
         "      analytic_shot: true\n"
         "      near_goal_analytic_expansion: false\n"
         "      near_goal_analytic_radius_m: 0.0\n"
@@ -146,6 +173,7 @@ std::string missingBehaviorYaml() {
 
 std::string extraBehaviorYaml() {
     return
+        schemaSectionYaml() +
         "behaviors:\n"
         "  primary_profile:\n"
         "    planner:\n"
@@ -162,6 +190,7 @@ std::string extraBehaviorYaml() {
         "      analytic_expansion_max_length_m: 20.0\n"
         "      analytic_expansion_ratio: 0.35\n"
         "      min_path_len_in_same_motion: 1.0\n"
+        "      min_goal_straight_approach_m: 0.0\n"
         "      analytic_shot: true\n"
         "      near_goal_analytic_expansion: false\n"
         "      near_goal_analytic_radius_m: 0.0\n"
@@ -197,10 +226,6 @@ std::string extraBehaviorYaml() {
 class PlannerBehaviorParserTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        std::ofstream master("test_master_params.yaml");
-        master << masterYaml();
-        master.close();
-
         std::ofstream valid("valid_behaviors.yaml");
         valid << validBehaviorYaml();
         valid.close();
@@ -215,16 +240,14 @@ protected:
     }
 
     void TearDown() override {
-        std::remove("test_master_params.yaml");
         std::remove("valid_behaviors.yaml");
         std::remove("missing_behavior_key.yaml");
         std::remove("extra_behavior_key.yaml");
     }
 };
 
-TEST_F(PlannerBehaviorParserTest, ParsesProfilesThatMatchMasterSchema) {
-    const auto config_file =
-        PlannerBehaviorParser::parse("test_master_params.yaml", "valid_behaviors.yaml");
+TEST_F(PlannerBehaviorParserTest, ParsesProfilesThatMatchEmbeddedSchema) {
+    const auto config_file = PlannerBehaviorParser::parse("valid_behaviors.yaml");
     const auto& profiles = config_file.profiles;
 
     ASSERT_EQ(profiles.size(), 1);
@@ -236,6 +259,9 @@ TEST_F(PlannerBehaviorParserTest, ParsesProfilesThatMatchMasterSchema) {
     EXPECT_DOUBLE_EQ(
         profiles.at("primary_profile").planner.min_path_len_in_same_motion,
         1.0);
+    EXPECT_DOUBLE_EQ(
+        profiles.at("primary_profile").planner.min_goal_straight_approach_m,
+        2.5);
     EXPECT_TRUE(profiles.at("primary_profile").planner.analytic_shot);
     EXPECT_FALSE(
         profiles.at("primary_profile").planner.near_goal_analytic_expansion);
@@ -251,24 +277,29 @@ TEST_F(PlannerBehaviorParserTest, ParsesProfilesThatMatchMasterSchema) {
 
 TEST_F(PlannerBehaviorParserTest, DefaultsGlobalDebugModeToFalseWhenGlobalNodeIsMissing) {
     std::ofstream no_global("no_global_behaviors.yaml");
-    no_global << validBehaviorYaml().substr(validBehaviorYaml().find("behaviors:\n"));
+    no_global << schemaSectionYaml()
+              << validBehaviorYaml().substr(validBehaviorYaml().find("behaviors:\n"));
     no_global.close();
 
-    const auto config_file =
-        PlannerBehaviorParser::parse("test_master_params.yaml", "no_global_behaviors.yaml");
+    const auto config_file = PlannerBehaviorParser::parse("no_global_behaviors.yaml");
 
     EXPECT_FALSE(config_file.global.debug_mode);
     std::remove("no_global_behaviors.yaml");
 }
 
-TEST_F(PlannerBehaviorParserTest, ThrowsWhenBehaviorOmitsMasterKey) {
-    EXPECT_THROW(
-        PlannerBehaviorParser::parse("test_master_params.yaml", "missing_behavior_key.yaml"),
-        std::runtime_error);
+TEST_F(PlannerBehaviorParserTest, ThrowsWhenBehaviorOmitsSchemaKey) {
+    EXPECT_THROW(PlannerBehaviorParser::parse("missing_behavior_key.yaml"), std::runtime_error);
 }
 
 TEST_F(PlannerBehaviorParserTest, ThrowsWhenBehaviorAddsUnexpectedKey) {
-    EXPECT_THROW(
-        PlannerBehaviorParser::parse("test_master_params.yaml", "extra_behavior_key.yaml"),
-        std::runtime_error);
+    EXPECT_THROW(PlannerBehaviorParser::parse("extra_behavior_key.yaml"), std::runtime_error);
+}
+
+TEST_F(PlannerBehaviorParserTest, ThrowsWhenSchemaNodeIsMissing) {
+    std::ofstream no_schema("no_schema_behaviors.yaml");
+    no_schema << validBehaviorYaml().substr(validBehaviorYaml().find("global:\n"));
+    no_schema.close();
+
+    EXPECT_THROW(PlannerBehaviorParser::parse("no_schema_behaviors.yaml"), std::runtime_error);
+    std::remove("no_schema_behaviors.yaml");
 }

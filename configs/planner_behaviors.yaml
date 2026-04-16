@@ -1,7 +1,7 @@
 # ==============================================================================
 # Planner Behaviors
-# Each behavior is a profile/variant of the master_params.yaml settings.
-# Each profile must repeat the full master_params.yaml schema.
+# The top-level schema defines the required shape for every behavior profile.
+# Each profile must repeat the full schema and add active_layers.
 # ==============================================================================
 #
 # Available Costmap Layers (for active_layers list):
@@ -15,6 +15,48 @@
 #
 # Note: The planner consults active_layers when applying cost terms.
 #       The builder still constructs its standard layers unconditionally.
+
+schema:
+  planner:
+    max_planning_time_ms: 100
+    xy_grid_resolution_m: 0.1
+    yaw_grid_resolution_deg: 5.0
+    step_size_m: 0.5
+    only_forward_path: false
+    weight_forward: 1.0
+    weight_reverse: 2.0
+    weight_steer: 0.5
+    weight_steer_change: 1.5
+    weight_gear_change: 2.0
+    analytic_expansion_max_length_m: 20.0
+    analytic_expansion_ratio: 0.35
+    min_path_len_in_same_motion: 1.0
+    min_goal_straight_approach_m: 0.0
+    analytic_shot: true
+    near_goal_analytic_expansion: false
+    near_goal_analytic_radius_m: 0.0
+    weight_lane_centerline: 1.0
+    lane_heading_bias_weight: 0.0
+    max_cross_track_error_m: 0.0
+    lane_primitive_suppression: false
+  costmap:
+    resolution_m: 0.1
+    inflation_radius_m: 0.3
+    inscribed_radius_m: 1.0
+    cost_scaling_factor: 3.0
+    alpha_shape_alpha: 0.0
+    max_lane_cost: 100.0
+    max_lane_half_width_m: 5.0
+  collision_checker:
+    collision_mode: "strict"
+    lethal_threshold: 254.0
+    margin_m: 0.0
+  motion_primitives:
+    num_angle_bins: 72
+  non_holonomic_heuristic:
+    lut_grid_size: 400
+    lut_cell_size_m: 0.1
+    hitch_angle_penalty_factor: 2.0
 
 global:
   debug_mode: false
@@ -36,6 +78,7 @@ behaviors:
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
       min_path_len_in_same_motion: 3.0
+      min_goal_straight_approach_m: 0.0
       analytic_shot: true
       near_goal_analytic_expansion: true
       near_goal_analytic_radius_m: 3.0
@@ -85,6 +128,7 @@ behaviors:
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
       min_path_len_in_same_motion: 1.5
+      min_goal_straight_approach_m: 0.0
       analytic_shot: true
       near_goal_analytic_expansion: false
       near_goal_analytic_radius_m: 0.0
@@ -132,6 +176,7 @@ behaviors:
       analytic_expansion_max_length_m: 30.0
       analytic_expansion_ratio: 0.5
       min_path_len_in_same_motion: 1.0
+      min_goal_straight_approach_m: 0.0
       analytic_shot: true
       near_goal_analytic_expansion: true
       near_goal_analytic_radius_m: 8.0
@@ -180,6 +225,7 @@ behaviors:
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
       min_path_len_in_same_motion: 0.5
+      min_goal_straight_approach_m: 0.0
       analytic_shot: true
       near_goal_analytic_expansion: false
       near_goal_analytic_radius_m: 0.0
@@ -228,6 +274,7 @@ behaviors:
       analytic_expansion_max_length_m: 20.0
       analytic_expansion_ratio: 0.35
       min_path_len_in_same_motion: 0.5
+      min_goal_straight_approach_m: 0.0
       analytic_shot: false
       near_goal_analytic_expansion: true
       near_goal_analytic_radius_m: 5.0

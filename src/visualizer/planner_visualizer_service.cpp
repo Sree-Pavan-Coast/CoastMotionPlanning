@@ -67,6 +67,8 @@ json profileToJson(const planning::PlannerBehaviorProfile& profile) {
             {"analytic_expansion_max_length_m", profile.planner.analytic_expansion_max_length_m},
             {"analytic_expansion_ratio", profile.planner.analytic_expansion_ratio},
             {"min_path_len_in_same_motion", profile.planner.min_path_len_in_same_motion},
+            {"min_goal_straight_approach_m",
+             profile.planner.min_goal_straight_approach_m},
             {"analytic_shot", profile.planner.analytic_shot},
             {"near_goal_analytic_expansion", profile.planner.near_goal_analytic_expansion},
             {"near_goal_analytic_radius_m", profile.planner.near_goal_analytic_radius_m},

@@ -38,13 +38,7 @@ YAML::Node loadYamlFile(const std::string& filepath, const std::string& label) {
 
 } // namespace
 
-PlannerBehaviorConfigFile PlannerBehaviorParser::parse(const std::string& master_params_filepath,
-                                                       const std::string& behaviors_filepath) {
-    const YAML::Node master_root = loadYamlFile(master_params_filepath, "master params");
-    if (!master_root || !master_root.IsMap()) {
-        throw std::runtime_error("Master params file must contain a YAML map: " + master_params_filepath);
-    }
-
+PlannerBehaviorConfigFile PlannerBehaviorParser::parse(const std::string& behaviors_filepath) {
     const YAML::Node behaviors_root = loadYamlFile(behaviors_filepath, "planner behavior");
     if (!behaviors_root || !behaviors_root.IsMap()) {
         throw std::runtime_error(
@@ -53,10 +47,16 @@ PlannerBehaviorConfigFile PlannerBehaviorParser::parse(const std::string& master
 
     for (const auto& root_entry : behaviors_root) {
         const std::string key = root_entry.first.as<std::string>("");
-        if (key != "global" && key != "behaviors") {
+        if (key != "schema" && key != "global" && key != "behaviors") {
             throw std::runtime_error(
                 "Planner behavior file has unexpected top-level key '" + key + "'.");
         }
+    }
+
+    const YAML::Node schema_node = behaviors_root["schema"];
+    if (!schema_node || !schema_node.IsMap()) {
+        throw std::runtime_error("Planner behavior file missing required 'schema' map: " +
+                                 behaviors_filepath);
     }
 
     const YAML::Node behaviors_node = behaviors_root["behaviors"];
@@ -73,7 +73,7 @@ PlannerBehaviorConfigFile PlannerBehaviorParser::parse(const std::string& master
         }
 
         const YAML::Node profile_node = behavior_entry.second;
-        validateProfileSchema(master_root, profile_node, profile_name, "");
+        validateProfileSchema(schema_node, profile_node, profile_name, "");
 
         const YAML::Node active_layers = profile_node["active_layers"];
         if (!active_layers) {
@@ -218,6 +218,8 @@ planning::PlannerBehaviorProfile PlannerBehaviorParser::parseProfile(
         planner["analytic_expansion_ratio"].as<double>();
     profile.planner.min_path_len_in_same_motion =
         planner["min_path_len_in_same_motion"].as<double>();
+    profile.planner.min_goal_straight_approach_m =
+        planner["min_goal_straight_approach_m"].as<double>();
     profile.planner.analytic_shot = planner["analytic_shot"].as<bool>();
     profile.planner.near_goal_analytic_expansion =
         planner["near_goal_analytic_expansion"].as<bool>();

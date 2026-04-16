@@ -6,6 +6,8 @@
 
 #include <atomic>
 
+
+
 enum class AngleUnit{
     Degrees,
     Radians
@@ -18,10 +20,4 @@ class MAPSSGHeadingErrorCalc : public MAPSComponent
 
     MAPSTimestamp _Appointment;
     int _SamplingPeriod = 100000;
-
-    // std::atomic<bool> _StartOutputHeadingErrorData = false;
-
-    // void HeadingErrorStarter();
-
-    // std::
 };

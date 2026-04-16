@@ -99,7 +99,11 @@ void MAPSSGPathToProvisional::Core()
         ioEltOut->Timestamp() = iElt->Timestamp();
         StopWriting(ioEltOut);
         Rest(1000000);
+    }else{
+        Rest(2000000);
     }
+
+    Rest(1000000);
 }
 
 void MAPSSGPathToProvisional::Death()

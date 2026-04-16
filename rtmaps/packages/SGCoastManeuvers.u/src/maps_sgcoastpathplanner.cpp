@@ -135,7 +135,11 @@ void MAPSSGCoastPathPlanner::Core()
         ioEltOut->VectorSize() = size;
         ioEltOut->Timestamp() = input_elt->Timestamp();
         StopWriting(ioEltOut);
+    }else{
+        Rest(2000000);
     }
+
+    Rest(1000000);
 }
 
 void MAPSSGCoastPathPlanner::Death()

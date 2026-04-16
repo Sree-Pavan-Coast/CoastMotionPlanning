@@ -509,17 +509,13 @@ geometry::Polygon2d ZoneSelector::computeConcaveHull(
     double alpha) {
     // Collect all unique vertices from all zone polygons
     std::vector<geometry::Point2d> all_points;
-    const auto pointsMatch = [](const geometry::Point2d& a, const geometry::Point2d& b) {
-        return std::abs(geometry::bg::get<0>(a) - geometry::bg::get<0>(b)) < 1e-9 &&
-               std::abs(geometry::bg::get<1>(a) - geometry::bg::get<1>(b)) < 1e-9;
-    };
     for (const auto& poly : zone_polygons) {
         for (const auto& pt : poly.outer()) {
             const bool already_present = std::any_of(
                 all_points.begin(),
                 all_points.end(),
                 [&](const geometry::Point2d& existing) {
-                    return pointsMatch(existing, pt);
+                    return geometry::arePointsClose(existing, pt, 1e-9);
                 });
             if (!already_present) {
                 all_points.push_back(pt);

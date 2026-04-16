@@ -18,6 +18,10 @@ struct Pose2d {
 
     // basic equality operator
     bool operator==(const Pose2d& other) const;
+
+    common::MotionDirection inferMotionDirectionTo(
+        const Pose2d& other,
+        common::MotionDirection fallback_direction = common::MotionDirection::Forward) const;
 };
 
 } // namespace math

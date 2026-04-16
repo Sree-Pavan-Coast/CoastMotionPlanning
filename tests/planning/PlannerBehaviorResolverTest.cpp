@@ -138,9 +138,9 @@ TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
 
     EXPECT_EQ(primary.planner.max_planning_time_ms, 2000);
     EXPECT_DOUBLE_EQ(primary.planner.step_size_m, 0.5);
-    EXPECT_TRUE(primary.planner.only_forward_path);
+    EXPECT_FALSE(primary.planner.only_forward_path);
     EXPECT_DOUBLE_EQ(primary.planner.weight_gear_change, 4.0);
-    EXPECT_DOUBLE_EQ(primary.planner.min_path_len_in_same_motion, 5.0);
+    EXPECT_DOUBLE_EQ(primary.planner.min_path_len_in_same_motion, 3.0);
     EXPECT_TRUE(primary.planner.analytic_shot);
     EXPECT_DOUBLE_EQ(primary.planner.weight_lane_centerline, 1.0);
     EXPECT_DOUBLE_EQ(primary.costmap.resolution_m, 0.1);

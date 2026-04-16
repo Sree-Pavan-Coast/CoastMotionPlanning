@@ -102,7 +102,7 @@ int main() {
 
 Important runtime conventions:
 
-- `PlannerBehaviorSet::loadFromFile(".../planner_behaviors.yaml")` automatically expects a sibling file named `master_params.yaml` in the same directory.
+- `PlannerBehaviorSet::loadFromFile(".../planner_behaviors.yaml")` expects that file to contain a top-level `schema` map plus named behavior profiles.
 - `HybridAStarPlanner` is currently car-only. There is no `TruckTrailer` overload yet.
 - `request.dual_model_lut_path` is optional. If no LUT is loaded, the planner still configures OMPL-based heuristic spaces at runtime.
 - `HybridAStarPlannerResult::debug_trace` is only populated when `global.debug_mode: true` in `planner_behaviors.yaml`.
@@ -154,6 +154,7 @@ Boost.Geometry aliases:
 - `using Polygon2d = bg::model::polygon<Point2d>;`
 - `using Box2d = bg::model::box<Point2d>;`
 - `using LineString2d = bg::model::linestring<Point2d>;`
+- `bool arePointsClose(const Point2d& a, const Point2d& b, double tolerance = common::EPSILON)`
 
 These types are used throughout zones, robot footprints, and geometry utilities.
 
@@ -182,6 +183,7 @@ These types are used throughout zones, robot footprints, and geometry utilities.
   - default constructor
   - `Pose2d(double x_, double y_, Angle theta_)`
   - `bool operator==(const Pose2d& other) const`
+  - `common::MotionDirection inferMotionDirectionTo(const Pose2d& other, common::MotionDirection fallback_direction = common::MotionDirection::Forward) const`
 
 This is the standard world-frame pose type used by maps, zones, planners, and results.
 
@@ -290,11 +292,11 @@ Behavior notes:
   - `PlannerBehaviorProfiles profiles`
 
 - `class PlannerBehaviorParser`
-  - `static PlannerBehaviorConfigFile parse(const std::string& master_params_filepath, const std::string& behaviors_filepath)`
+  - `static PlannerBehaviorConfigFile parse(const std::string& behaviors_filepath)`
 
 Behavior notes:
 
-- `parse()` validates that every behavior profile repeats the full schema from `master_params.yaml`.
+- `parse()` validates that every behavior profile repeats the embedded top-level `schema`.
 - unexpected keys cause an exception.
 - `active_layers` is required for every behavior profile.
 
@@ -1045,11 +1047,11 @@ Response body is `PlanResponse` serialized to JSON:
 ### Planner behavior files
 
 - `planner_behaviors.yaml` contains:
+  - `schema.*`
   - `global.debug_mode`
   - `behaviors.<name>.*`
-- `master_params.yaml` is the required reference schema
-- every behavior profile must repeat the full schema from `master_params.yaml`
-- `PlannerBehaviorSet::loadFromFile()` expects both files to live in the same directory
+- every behavior profile must repeat the full schema from `planner_behaviors.yaml`
+- `PlannerBehaviorSet::loadFromFile()` only needs `planner_behaviors.yaml`
 
 ### Map files
 
@@ -1090,7 +1092,6 @@ CLI parameters:
 - The main planner path is car-only today.
 - `RobotsParser` has no `TruckTrailerDefinition` return type.
 - `HybridAStarPlanner` takes `robot::Car`, not `robot::RobotBase`.
-- `PlannerBehaviorSet::loadFromFile()` silently depends on sibling `master_params.yaml`; if you move `planner_behaviors.yaml`, move the master file with it.
 - `CostmapBuilder` always creates its standard layers even if a profile's `active_layers` set is smaller.
 - `PlannerVisualizerService` only advertises planning support for car robots.
 - The repo does not yet ship `install()`/package-export support, so external apps should consume it through `add_subdirectory` or `FetchContent`.

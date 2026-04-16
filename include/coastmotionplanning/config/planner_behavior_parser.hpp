@@ -20,8 +20,7 @@ struct PlannerBehaviorConfigFile {
 
 class PlannerBehaviorParser {
 public:
-    static PlannerBehaviorConfigFile parse(const std::string& master_params_filepath,
-                                           const std::string& behaviors_filepath);
+    static PlannerBehaviorConfigFile parse(const std::string& behaviors_filepath);
 
 private:
     static planning::PlannerBehaviorGlobalConfig parseGlobalConfig(

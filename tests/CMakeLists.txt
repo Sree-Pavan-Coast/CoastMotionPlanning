@@ -14,6 +14,14 @@ target_link_libraries(grid_map_test PRIVATE
 )
 gtest_discover_tests(grid_map_test)
 
+add_executable(pose2d_test math/Pose2dTest.cpp)
+target_link_libraries(pose2d_test PRIVATE gtest_main coast_motion_planning)
+gtest_discover_tests(pose2d_test)
+
+add_executable(shape_types_test geometry/ShapeTypesTest.cpp)
+target_link_libraries(shape_types_test PRIVATE gtest_main coast_motion_planning)
+gtest_discover_tests(shape_types_test)
+
 # Map Parser and Coordinate Transform Tests
 add_executable(map_parser_test map/MapParserTest.cpp)
 target_link_libraries(map_parser_test PRIVATE 

@@ -59,8 +59,7 @@ Each zone declares which costmap layers it activates (`getActiveLayers()`) and w
 
 ### Configuration
 
-- `configs/master_params.yaml` -- baseline parameters for all subsystems
-- `configs/planner_behaviors.yaml` -- named profiles (primary, relaxed, parking) that override master params and select active costmap layers
+- `configs/planner_behaviors.yaml` -- embedded schema plus named profiles (primary, relaxed, parking) and active costmap layers
 - `configs/robots.yaml` -- robot geometry and kinematic definitions
 - `configs/maps/*.yaml` -- map definitions with zone polygons
 

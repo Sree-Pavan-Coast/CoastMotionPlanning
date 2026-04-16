@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.18)
 project(coast_motion_planning VERSION 1.0.0 LANGUAGES CXX)
 
+option(COAST_BUILD_RTMAPS "Build RTMAPS package integration" ON)
+
 if(POLICY CMP0167)
   cmake_policy(SET CMP0167 OLD)
 endif()
@@ -232,4 +234,6 @@ endif()
 
 add_subdirectory(apps)
 add_subdirectory(tests)
-add_subdirectory(rtmaps)
+if(COAST_BUILD_RTMAPS)
+    add_subdirectory(rtmaps)
+endif()

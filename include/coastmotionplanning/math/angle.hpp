@@ -49,9 +49,8 @@ public:
 
     // Comparison operators
     bool operator==(const Angle& other) const { 
-        constexpr double epsilon = 1e-6;
         // Compare normalized values to ensure pi == -pi is handled smoothly
-        return std::abs(normalized().rad_ - other.normalized().rad_) < epsilon; 
+        return std::abs(normalized().rad_ - other.normalized().rad_) < common::EPSILON; 
     }
 
 private:

@@ -92,6 +92,53 @@ std::string readTextFile(const std::filesystem::path& path) {
         std::istreambuf_iterator<char>());
 }
 
+size_t findBehaviorProfileStart(const std::string& yaml, const std::string& profile_name) {
+    const std::string profile_header = "  " + profile_name + ":\n";
+    const size_t profile_pos = yaml.find(profile_header);
+    if (profile_pos == std::string::npos) {
+        throw std::runtime_error("Failed to locate " + profile_name +
+                                 " in planner_behaviors.yaml");
+    }
+    return profile_pos;
+}
+
+size_t findBehaviorProfileEnd(const std::string& yaml, size_t profile_pos) {
+    size_t search_pos = profile_pos + 1;
+    while (true) {
+        const size_t candidate_pos = yaml.find("\n  ", search_pos);
+        if (candidate_pos == std::string::npos) {
+            return yaml.size();
+        }
+
+        const size_t next_char_pos = candidate_pos + 3;
+        if (next_char_pos < yaml.size() && yaml[next_char_pos] != ' ') {
+            return candidate_pos + 1;
+        }
+        search_pos = candidate_pos + 1;
+    }
+}
+
+void replaceBehaviorProfileScalar(std::string& yaml,
+                                  const std::string& profile_name,
+                                  const std::string& key,
+                                  const std::string& value) {
+    const size_t profile_pos = findBehaviorProfileStart(yaml, profile_name);
+    const size_t profile_end = findBehaviorProfileEnd(yaml, profile_pos);
+    const std::string key_prefix = "      " + key + ":";
+    const size_t key_pos = yaml.find(key_prefix, profile_pos);
+    if (key_pos == std::string::npos || key_pos >= profile_end) {
+        throw std::runtime_error("Failed to locate " + profile_name + "." + key);
+    }
+
+    const size_t line_end = yaml.find('\n', key_pos);
+    if (line_end == std::string::npos) {
+        throw std::runtime_error("Failed to locate end of " + profile_name + "." + key +
+                                 " line.");
+    }
+
+    yaml.replace(key_pos, line_end - key_pos, "      " + key + ": " + value);
+}
+
 std::filesystem::path makeTempConfigsRoot(bool debug_mode,
                                           bool primary_only_forward = false) {
     const auto unique_id = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -119,51 +166,9 @@ std::filesystem::path makeTempConfigsRoot(bool debug_mode,
     }
 
     if (primary_only_forward) {
-        const size_t primary_profile_pos = behaviors.find("  primary_profile:\n");
-        if (primary_profile_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate primary_profile in planner_behaviors.yaml");
-        }
-        const std::string only_forward_false = "      only_forward_path: true";
-        const size_t only_forward_pos =
-            behaviors.find(only_forward_false, primary_profile_pos);
-        if (only_forward_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate primary_profile.only_forward_path");
-        }
-        behaviors.replace(
-            only_forward_pos,
-            only_forward_false.size(),
-            "      only_forward_path: true");
-
-        const size_t relaxed_profile_pos = behaviors.find("  relaxed_profile:\n");
-        if (relaxed_profile_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate relaxed_profile in planner_behaviors.yaml");
-        }
-        const std::string relaxed_only_forward_true = "      only_forward_path: true";
-        const size_t relaxed_only_forward_pos =
-            behaviors.find(relaxed_only_forward_true, relaxed_profile_pos);
-        if (relaxed_only_forward_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate relaxed_profile.only_forward_path");
-        }
-        behaviors.replace(
-            relaxed_only_forward_pos,
-            relaxed_only_forward_true.size(),
-            "      only_forward_path: false");
-
-        const std::string relaxed_planning_time = "      max_planning_time_ms: 3000";
-        const size_t relaxed_planning_time_pos =
-            behaviors.find(relaxed_planning_time, relaxed_profile_pos);
-        if (relaxed_planning_time_pos == std::string::npos) {
-            throw std::runtime_error(
-                "Failed to locate relaxed_profile.max_planning_time_ms");
-        }
-        behaviors.replace(
-            relaxed_planning_time_pos,
-            relaxed_planning_time.size(),
-            "      max_planning_time_ms: 5000");
+        replaceBehaviorProfileScalar(behaviors, "primary_profile", "only_forward_path", "true");
+        replaceBehaviorProfileScalar(behaviors, "relaxed_profile", "only_forward_path", "false");
+        replaceBehaviorProfileScalar(behaviors, "relaxed_profile", "max_planning_time_ms", "5000");
     }
 
     std::ofstream behavior_stream(temp_configs_root / "planner_behaviors.yaml");

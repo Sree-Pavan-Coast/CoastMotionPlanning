@@ -1,7 +1,6 @@
 #include "coastmotionplanning/planning/planner_behavior_set.hpp"
 
 #include <algorithm>
-#include <filesystem>
 #include <stdexcept>
 
 #include "coastmotionplanning/config/planner_behavior_parser.hpp"
@@ -10,11 +9,7 @@ namespace coastmotionplanning {
 namespace planning {
 
 PlannerBehaviorSet PlannerBehaviorSet::loadFromFile(const std::string& filepath) {
-    const std::filesystem::path behaviors_path(filepath);
-    const std::filesystem::path master_params_path =
-        behaviors_path.parent_path() / "master_params.yaml";
-    const auto config_file = config::PlannerBehaviorParser::parse(
-        master_params_path.string(), filepath);
+    const auto config_file = config::PlannerBehaviorParser::parse(filepath);
 
     PlannerBehaviorSet behavior_set;
     behavior_set.global_config_ = config_file.global;

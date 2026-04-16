@@ -145,13 +145,11 @@ void MAPSSGCoastPathPlanner::Death()
 void MAPSSGCoastPathPlanner::ZoneAreaReaderThread()
 {
     auto &input = Input("iZoneArea");
-
-
-    auto arePointsClose = [] (const Point2d& p1, const Point2d& p2) -> bool 
-    {
-        constexpr static auto tol = 1e-12;
-        return bg::comparable_distance(p1, p2) <= tol;
-    };
+    // auto arePointsClose = [] (const Point2d& p1, const Point2d& p2) -> bool 
+    // {
+    //     constexpr static auto tol = 1e-12;
+    //     return bg::comparable_distance(p1, p2) <= tol;
+    // };
 
     while (!IsDying())
     {

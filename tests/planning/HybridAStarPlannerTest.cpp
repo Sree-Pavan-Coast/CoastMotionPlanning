@@ -432,6 +432,26 @@ TEST(HybridAStarPlannerTest, StartCollisionFailsOnSelectedZoneCostmap) {
     EXPECT_NE(result.detail.find("Start pose is in collision"), std::string::npos);
 }
 
+TEST(HybridAStarPlannerTest, RuntimeObstaclePolygonsTriggerPlannerCollisionValidation) {
+    const PlannerBehaviorSet behavior_set = loadBehaviorSet();
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -4.0, 12.0, 4.0)
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(2.0, 0.0);
+    request.goal = makePose(7.0, 0.0);
+    request.obstacle_polygons.push_back(makeRectangle(1.0, -1.5, 3.0, 1.5));
+    request.initial_behavior_name = "primary_profile";
+
+    const auto result = planner.plan(request);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.detail.find("Start pose is in collision"), std::string::npos);
+}
+
 TEST(HybridAStarPlannerTest, GoalMustAllowMinimumSameMotionLengthBeforeStopping) {
     const PlannerBehaviorSet behavior_set =
         loadCustomPrimaryProfileBehaviorSet(true, 5.0);

@@ -7,6 +7,7 @@
 #include <grid_map_core/grid_map_core.hpp>
 #include "coastmotionplanning/common/profiling.hpp"
 #include "coastmotionplanning/costs/costmap_types.hpp"
+#include "coastmotionplanning/geometry/shape_types.hpp"
 #include "coastmotionplanning/costs/non_holonomic_heuristic.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
 #include "coastmotionplanning/robot/robot_base.hpp"
@@ -32,11 +33,18 @@ public:
     /// Build the full costmap for a planning query.
     /// @param start  Start pose
     /// @param goal   Goal pose
+    /// @param obstacle_polygons  Runtime obstacle polygons to stamp into static_obstacles
     /// @return Fully populated GridMap with all 7 layers
-    grid_map::GridMap build(const math::Pose2d& start, const math::Pose2d& goal);
+    grid_map::GridMap build(
+        const math::Pose2d& start,
+        const math::Pose2d& goal,
+        const std::vector<geometry::Polygon2d>& obstacle_polygons = {});
 
     /// Build the full costmap for a planning query using a precomputed zone selection.
-    grid_map::GridMap build(const ZoneSelectionResult& selection, const math::Pose2d& goal);
+    grid_map::GridMap build(
+        const ZoneSelectionResult& selection,
+        const math::Pose2d& goal,
+        const std::vector<geometry::Polygon2d>& obstacle_polygons = {});
 
     /// Load a non-holonomic heuristic LUT from a binary file.
     /// @param filepath Path to the .bin file

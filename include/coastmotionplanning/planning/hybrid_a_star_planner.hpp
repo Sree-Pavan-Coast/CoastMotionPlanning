@@ -8,6 +8,7 @@
 #include "coastmotionplanning/common/profiling.hpp"
 #include "coastmotionplanning/common/types.hpp"
 #include "coastmotionplanning/costs/dual_model_non_holonomic_heuristic.hpp"
+#include "coastmotionplanning/geometry/shape_types.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
 #include "coastmotionplanning/motion_primitives/motion_primitive_types.hpp"
 #include "coastmotionplanning/planning/planner_behavior_resolver.hpp"
@@ -134,6 +135,7 @@ struct HybridAStarPlannerDebugTrace {
 struct HybridAStarPlannerRequest {
     math::Pose2d start;
     math::Pose2d goal;
+    std::vector<geometry::Polygon2d> obstacle_polygons;
     std::string initial_behavior_name;
     std::string transition_behavior_name;
     std::string dual_model_lut_path;

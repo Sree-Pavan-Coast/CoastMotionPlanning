@@ -40,7 +40,8 @@ CostmapBuilder::CostmapBuilder(
     : config_(config), all_zones_(all_zones), robot_(robot), profiler_(profiler) {}
 
 grid_map::GridMap CostmapBuilder::build(const math::Pose2d& start,
-                                         const math::Pose2d& goal) {
+                                        const math::Pose2d& goal,
+                                        const std::vector<geometry::Polygon2d>& obstacle_polygons) {
     auto total_start = Clock::now();
 
     // ---- Step 1: Zone Selection + Concave Hull ----
@@ -49,13 +50,14 @@ grid_map::GridMap CostmapBuilder::build(const math::Pose2d& start,
     auto selection = selector.select(start, goal, all_zones_, config_.alpha_shape_alpha);
     recordTiming("costmap.zone_selection", t, profiler_);
 
-    auto costmap = build(selection, goal);
+    auto costmap = build(selection, goal, obstacle_polygons);
     recordTiming("costmap.total_build", total_start, profiler_);
     return costmap;
 }
 
 grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
-                                        const math::Pose2d& goal) {
+                                        const math::Pose2d& goal,
+                                        const std::vector<geometry::Polygon2d>& obstacle_polygons) {
     auto t = Clock::now();
 
     // ---- Step 2: Create GridMap with geometry matching the search boundary ----
@@ -90,7 +92,7 @@ grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
 
     // ---- Step 3: Static Obstacles ----
     t = Clock::now();
-    StaticObstacleLayer::build(costmap_, selection.search_boundary);
+    StaticObstacleLayer::build(costmap_, selection.search_boundary, obstacle_polygons);
     recordTiming("costmap.static_obstacles_layer", t, profiler_);
 
     // ---- Step 4: Inflation ----

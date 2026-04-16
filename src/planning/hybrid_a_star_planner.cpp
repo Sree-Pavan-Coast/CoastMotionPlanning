@@ -966,7 +966,8 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     costs::CostmapBuilder builder(
         initial_profile.makeCostmapConfig(), all_zones_, car_, profiler);
     const Clock::time_point costmap_start_time = Clock::now();
-    grid_map::GridMap costmap = builder.build(selection, request.goal);
+    grid_map::GridMap costmap =
+        builder.build(selection, request.goal, request.obstacle_polygons);
     if (debug_trace != nullptr) {
         debug_trace->costmap_build_ms =
             elapsedMilliseconds(costmap_start_time, Clock::now());

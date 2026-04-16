@@ -192,6 +192,53 @@ TEST_F(CostmapBuilderTest, LaneMetadataLayersEncodeDirectionalHeadingAndDistance
     EXPECT_TRUE(std::isinf(maneuver_distance));
 }
 
+TEST_F(CostmapBuilderTest, RebuildWithUpdatedObstaclePolygonsResetsDerivedLayers) {
+    costs::CostmapBuilder builder(config, all_zones, *car);
+
+    const math::Pose2d start(0.0, 0.0, math::Angle::from_radians(0.0));
+    const math::Pose2d goal(10.0, 0.0, math::Angle::from_radians(0.0));
+    const grid_map::Position wall_center(5.0, 0.0);
+    const grid_map::Position inflated_sample(2.7, 0.0);
+    const grid_map::Position start_pos(start.x, start.y);
+
+    geometry::Polygon2d blocking_wall;
+    blocking_wall.outer() = {
+        geometry::Point2d(3.0, -10.0), geometry::Point2d(7.0, -10.0),
+        geometry::Point2d(7.0, 25.0), geometry::Point2d(3.0, 25.0),
+        geometry::Point2d(3.0, -10.0)
+    };
+
+    const auto baseline_costmap = builder.build(start, goal);
+    const float baseline_static =
+        baseline_costmap.atPosition(costs::CostmapLayerNames::STATIC_OBSTACLES, wall_center);
+    const float baseline_heuristic =
+        baseline_costmap.atPosition(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES, start_pos);
+
+    const auto blocked_costmap = builder.build(start, goal, {blocking_wall});
+    const float blocked_static =
+        blocked_costmap.atPosition(costs::CostmapLayerNames::STATIC_OBSTACLES, wall_center);
+    const float blocked_inflation =
+        blocked_costmap.atPosition(costs::CostmapLayerNames::INFLATION, inflated_sample);
+    const float blocked_heuristic =
+        blocked_costmap.atPosition(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES, start_pos);
+
+    const auto restored_costmap = builder.build(start, goal);
+    const float restored_static =
+        restored_costmap.atPosition(costs::CostmapLayerNames::STATIC_OBSTACLES, wall_center);
+    const float restored_heuristic =
+        restored_costmap.atPosition(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES, start_pos);
+
+    EXPECT_FLOAT_EQ(baseline_static, costs::CostValues::FREE_SPACE);
+    EXPECT_TRUE(std::isfinite(baseline_heuristic));
+
+    EXPECT_FLOAT_EQ(blocked_static, costs::CostValues::LETHAL);
+    EXPECT_GT(blocked_inflation, costs::CostValues::FREE_SPACE);
+    EXPECT_TRUE(std::isnan(blocked_heuristic));
+
+    EXPECT_FLOAT_EQ(restored_static, costs::CostValues::FREE_SPACE);
+    EXPECT_TRUE(std::isfinite(restored_heuristic));
+}
+
 TEST_F(CostmapBuilderTest, PerformanceBudget) {
     costs::CostmapBuilder builder(config, all_zones, *car);
 

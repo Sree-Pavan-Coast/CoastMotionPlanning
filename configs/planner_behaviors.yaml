@@ -373,7 +373,7 @@ behaviors:
       analytic_expansion_max_length_m: 10.0
       analytic_expansion_ratio: 0.35
       min_path_len_in_same_motion: 3.0
-      min_goal_straight_approach_m: 0.0
+      min_goal_straight_approach_m: 4.0
       analytic_shot: true
       near_goal_analytic_expansion: true
       near_goal_analytic_radius_m: 3.0

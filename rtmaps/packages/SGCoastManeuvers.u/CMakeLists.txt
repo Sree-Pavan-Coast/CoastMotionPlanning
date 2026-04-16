@@ -18,7 +18,11 @@ add_rtmaps_package(${PCK} PCKINFO "${PCK}.pckinfo"
     #pathtoprovisional
     "src/maps_sgpathtoprovisional.cpp"
     "include/maps_sgpathtoprovisional.h"
-)
+
+    #heading error calculator
+    "src/maps_sgheadingerrorcalc.cpp"
+    "include/maps_sgheadingerrorcalc.h"
+)   
 
 target_include_directories(${PCK} PRIVATE
     ${RTMAPS_PCK_INCLUDE_DIR}

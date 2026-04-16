@@ -231,6 +231,7 @@ void MAPSSGCoastPathPlanner::ZoneAreaReaderThread()
 
             {
                 std::lock_guard<std::mutex> lock(mtx);
+                _ZoneArea.reset_zone_area();
                 _ZoneArea.id = zone_area_id_received;
                 for(auto& vert : zone_polygon_verts)
                 {
@@ -344,6 +345,10 @@ HybridAStarPlannerResult MAPSSGCoastPathPlanner::PlanPath(const Pose2d& start)
     request.initial_behavior_name = GetStringProperty("planner_behavior_profile");
     request.transition_behavior_name.clear();
     request.dual_model_lut_path.clear();
+    std::vector<Polygon2d> complete_local_obstacles = _ZoneArea.static_obstacles;
+    complete_local_obstacles.insert(complete_local_obstacles.end(), _DynamicObstacles.begin(), _DynamicObstacles.end());
+    ReportInfo(MAPSStreamedString() << "Total obstacles found : " << complete_local_obstacles.size());
+    request.obstacle_polygons = complete_local_obstacles;
 
     return planner.plan(request);
 

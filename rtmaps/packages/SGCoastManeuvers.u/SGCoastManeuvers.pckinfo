@@ -1,0 +1,7 @@
+# Package information
+VERSION=1.0
+
+DESCRIPTION=SGCoastManeuvers starter package
+
+# LOG
+# 1.0: Initial package scaffold with a simple RTMaps component template.

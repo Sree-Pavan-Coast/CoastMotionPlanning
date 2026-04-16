@@ -12,6 +12,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+    add_compile_definitions(_USE_MATH_DEFINES)
+endif()
+
 include(FetchContent)
 
 # Find Boost
@@ -94,6 +98,21 @@ if(NOT grid_map_core_POPULATED)
         EIGEN_FUNCTORS_PLUGIN="grid_map_core/eigen_plugins/FunctorsPlugin.hpp"
         EIGEN_DENSEBASE_PLUGIN="grid_map_core/eigen_plugins/DenseBasePlugin.hpp"
     )
+    if(MSVC)
+        set(GRID_MAP_CORE_MSVC_COMPAT_HEADER
+            "${CMAKE_CURRENT_BINARY_DIR}/grid_map_core_msvc_compat.h"
+        )
+        file(WRITE "${GRID_MAP_CORE_MSVC_COMPAT_HEADER}"
+            "#pragma once\n"
+            "#ifndef _USE_MATH_DEFINES\n"
+            "#define _USE_MATH_DEFINES\n"
+            "#endif\n"
+            "using uint = unsigned int;\n"
+        )
+        target_compile_options(grid_map_core PRIVATE
+            /FI"${GRID_MAP_CORE_MSVC_COMPAT_HEADER}"
+        )
+    endif()
 endif()
 
 # Fetch GTest for unit testing
@@ -213,3 +232,4 @@ endif()
 
 add_subdirectory(apps)
 add_subdirectory(tests)
+# add_subdirectory(rtmaps)

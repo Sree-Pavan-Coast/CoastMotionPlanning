@@ -11,8 +11,13 @@ if(NOT DEFINED RTMAPS_SDKDIR)
 endif()
 
 add_rtmaps_package(${PCK} PCKINFO "${PCK}.pckinfo"
+    #coast path planer
     "src/maps_sgcoastpathplanner.cpp"
     "include/maps_sgcoastpathplanner.h"
+
+    #pathtoprovisional
+    "src/maps_sgpathtoprovisional.cpp"
+    "include/maps_sgpathtoprovisional.h"
 )
 
 target_include_directories(${PCK} PRIVATE
@@ -20,10 +25,12 @@ target_include_directories(${PCK} PRIVATE
     ${coast_motion_planning_SOURCE_DIR}/include
     $<BUILD_INTERFACE:${RTMAPS_PCK_INCLUDE_DIR}>
     $<INSTALL_INTERFACE:${RTMAPS_PCK_INCLUDE_DIR}>
+    
 )
 
-target_link_libraries(${PCK} PRIVATE
+target_link_libraries(${PCK} rtmaps_pck
     coast_motion_planning
+    Boost::boost
 )
 
 if(MSVC)

@@ -34,6 +34,10 @@ public:
         return a;
     }
 
+    inline void reset_to_zero() {
+        rad_ = 0.0;
+    }
+
     // Arithmetic operators
     Angle operator+(const Angle& other) const { return Angle(rad_ + other.rad_); }
     Angle operator-(const Angle& other) const { return Angle(rad_ - other.rad_); }

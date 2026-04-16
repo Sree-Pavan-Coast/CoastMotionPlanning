@@ -1,6 +1,7 @@
 #include "maps_sgcoastpathplanner.h"
-
+#include <exception>
 #include "coastmotionplanning/geometry/shape_types.hpp"
+#include "coastmotionplanning/zones/maneuvering_zone.hpp"
 
 MAPS_BEGIN_INPUTS_DEFINITION(MAPSSGCoastPathPlanner)
 MAPS_INPUT("iPositionSpeed", MAPS::FilterFloat64, MAPS::SamplingReader)
@@ -14,10 +15,11 @@ MAPS_OUTPUT("oPath", MAPS::Float64, nullptr, nullptr, 10000)
 MAPS_END_OUTPUTS_DEFINITION
 
 MAPS_BEGIN_PROPERTIES_DEFINITION(MAPSSGCoastPathPlanner)
-MAPS_PROPERTY_SUBTYPE("robot_params_file_path", "", false, true,
-                      MAPS::PropertySubTypeFile | MAPS::PropertySubTypeMustExist)
-MAPS_PROPERTY_SUBTYPE("planning_params_file_path", "", false, true,
-                      MAPS::PropertySubTypeFile | MAPS::PropertySubTypeMustExist)
+MAPS_PROPERTY("print_debug_info", false, false, false)
+MAPS_PROPERTY_SUBTYPE("robot_params_file_path", "", false, true, MAPS::PropertySubTypeFile | MAPS::PropertySubTypeMustExist)
+MAPS_PROPERTY_SUBTYPE("planning_behaviors_file_path", "", false, true, MAPS::PropertySubTypeFile | MAPS::PropertySubTypeMustExist)
+MAPS_PROPERTY_ENUM("robot_name", "Dolly|Pro_XD|E_Transit", 0, false, false)
+MAPS_PROPERTY_ENUM("planner_behavior_profile", "proxd_primary_profile|dolly_primary_profile", 0, false, false)
 MAPS_END_PROPERTIES_DEFINITION
 
 MAPS_BEGIN_ACTIONS_DEFINITION(MAPSSGCoastPathPlanner)
@@ -36,46 +38,51 @@ MAPS_COMPONENT_DEFINITION(MAPSSGCoastPathPlanner,
 
 void MAPSSGCoastPathPlanner::Birth()
 {
+    _IsZoneAreaAvailable = false;
+    const std::string planning_behaviors_file_path = GetStringProperty("planning_behaviors_file_path");
+    const std::string robot_params_file_path = GetStringProperty("robot_params_file_path");
+    const std::string robot_name = GetStringProperty("robot_name");
+    if (planning_behaviors_file_path.empty())
+    {
+        ReportError("Planning behaviors file path is not set. Check the planning behaviors file path.");
+        return;
+    }
+    _PlanningBehaviors = PlannerBehaviorSet::loadFromFile(planning_behaviors_file_path);
+    _CarDefinition = std::make_unique<CarDefinition>(RobotsParser::loadCarDefinition(robot_params_file_path, robot_name));
+    _Robot = std::make_unique<robot::Car>(_CarDefinition->buildCar());
+    _PlanningBehaviors.overrideMotionPrimitiveConstraints(_CarDefinition->minTurningRadiusMeters(), _CarDefinition->maxSteerAngleRadians());
+
     CreateThread((MAPSThreadFunction)&MAPSSGCoastPathPlanner::ZoneAreaReaderThread);
 
-    // [DEBUG]check if coast motion planning library is working correctly
-    coast::Point2d point(0.0, 0.0);
-    coast::Polygon polygon;
-    polygon.addVertex(point);
-    ReportInfo(MAPSStreamedString() << "Coast motion planning library is working correctly. Polygon: " << polygon.toString());
-    ReportInfo(MAPSStreamedString() << "Polygon vertices: " << polygon.numVertices());
-    ReportInfo(MAPSStreamedString() << "Polygon area: " << polygon.area());
-    ReportInfo(MAPSStreamedString() << "Polygon perimeter: " << polygon.perimeter());
-    ReportInfo(MAPSStreamedString() << "Polygon centroid: " << polygon.centroid().x << ", " << polygon.centroid().y);
-    ReportInfo(MAPSStreamedString() << "Polygon bounding box: " << polygon.boundingBox().x1 << ", " << polygon.boundingBox().y1 << " - " << polygon.boundingBox().x2 << ", " << polygon.boundingBox().y2);
-    ReportInfo(MAPSStreamedString() << "Polygon convex hull: " << polygon.convexHull().numVertices());
-    ReportInfo(MAPSStreamedString() << "Polygon convex hull vertices: " << polygon.convexHull().vertices[0].x << ", " << polygon.convexHull().vertices[0].y);
+    if(GetBoolProperty("print_debug_info")){
+        _PrintDebugInfo = true;
+    }
 }
 
 void MAPSSGCoastPathPlanner::Core()
 {
-
     // Check if zone area is available.
-    if (_ZoneArea.IsInit())
+    if (_IsZoneAreaAvailable)
     {
         MAPSIOElt *input_elt = StartReading(Input("iDestinationForManeuvers"));
         if (input_elt == nullptr)
             return;
 
+        // clear previous destination for maneuevrs
+        _DestinationForManeuvers.clear();
+
         // Parse the destination for maneuvers
-        double x = input_elt->Float64(0);
-        double y = input_elt->Float64(1);
-        double heading_rad = input_elt->Float64(2);
-        _DestinationForManeuvers.pose.setX(x);
-        _DestinationForManeuvers.pose.setY(y);
-        _DestinationForManeuvers.pose.setHeadingRad(heading_rad);
+        _DestinationForManeuvers.goal_pose.x = input_elt->Float64(0);
+        _DestinationForManeuvers.goal_pose.y = input_elt->Float64(1);
+        _DestinationForManeuvers.goal_pose.theta = Angle::from_radians(input_elt->Float64(2));
 
         // Parse the station polygon
         _DestinationForManeuvers.goal_station.clear();
         for (int i = 3; i < input_elt->VectorSize(); i += 2)
         {
-            _DestinationForManeuvers.goal_station.addVertex(input_elt->Float64(i), input_elt->Float64(i + 1));
+            _DestinationForManeuvers.goal_station.outer().emplace_back(input_elt->Float64(i), input_elt->Float64(i + 1));
         }
+        bg::correct(_DestinationForManeuvers.goal_station);
 
         // Parse starting position
         input_elt = StartReading(Input("iPositionSpeed"));
@@ -86,30 +93,44 @@ void MAPSSGCoastPathPlanner::Core()
             ReportError("Position speed input is too small. Expected x, y, speed, heading.");
             return;
         }
-        Pose start;
-        start.setX(input_elt->Float64(0));
-        start.setY(input_elt->Float64(1));
-        start.setHeadingRad(input_elt->Float64(3));
+
+        // parse start pose
+        Pose2d start;
+        start.x = input_elt->Float64(0);
+        start.y = input_elt->Float64(1);
+        start.theta = Angle::from_radians(input_elt->Float64(3));
 
         // Parse shapes for debug
         ReadShapesDebug();
 
         // Plan the path
-        const std::vector<Pose> path = PlanPath(start);
+        HybridAStarPlannerResult result;
+
+
+        ReportInfo("Starting planning engine");
+        try{
+            result = PlanPath(start);
+        } catch(std::exception& e) {
+            // std::string msg = "Planning threw exception: " + e.what().c_str();
+            ReportError(MAPSStreamedString() << "Planning threw exception: " << e.what());
+        }
+
+        // stats of result
+        if(result.success){
+            ReportInfo("Planning success");
+            ReportInfo(MAPSStreamedString() << "found path has " << result.poses.size() << " poses");
+        }else{
+            ReportInfo("Planning failed");
+        }
 
         MAPSIOElt *ioEltOut = StartWriting(Output("oPath"));
         long size = 0;
-        constexpr long kMaxOutputValues = 10000;
-        for (const Pose &point : path)
+        for (const auto &pose : result.poses)
         {
-            if (size + 3 > kMaxOutputValues)
-            {
-                break;
-            }
-
-            ioEltOut->Float64(size++) = point.x;
-            ioEltOut->Float64(size++) = point.y;
-            ioEltOut->Float64(size++) = point.heading_rad;
+            if(pose.x == 0.0 && pose.y == 0.0) break;
+            ioEltOut->Float64(size++) = pose.x;
+            ioEltOut->Float64(size++) = pose.y;
+            ioEltOut->Float64(size++) = pose.theta.radians();
         }
         ioEltOut->VectorSize() = size;
         ioEltOut->Timestamp() = input_elt->Timestamp();
@@ -124,6 +145,13 @@ void MAPSSGCoastPathPlanner::Death()
 void MAPSSGCoastPathPlanner::ZoneAreaReaderThread()
 {
     auto &input = Input("iZoneArea");
+
+
+    auto arePointsClose = [] (const Point2d& p1, const Point2d& p2) -> bool 
+    {
+        constexpr static auto tol = 1e-12;
+        return bg::comparable_distance(p1, p2) <= tol;
+    };
 
     while (!IsDying())
     {
@@ -157,57 +185,85 @@ void MAPSSGCoastPathPlanner::ZoneAreaReaderThread()
             // Parse zone area polygon
             size_t current_index = 1; // start after the zone ID
             size_t zone_end_index = current_index;
-            coast::Polygon zone_polygon;
+            std::vector<Point2d> zone_polygon_verts;
+
+            Point2d first_vert;
+            
             while (zone_end_index + 1 < zone_area_size)
             {
-                coast::Point2d point;
-                point.x = input_elt->Float64(zone_end_index);
-                point.y = input_elt->Float64(zone_end_index + 1);
-                zone_polygon.addVertex(point);
-
-                zone_end_index += 2;
-                if (zone_polygon.numVertices() >= 3 && (zone_polygon.distFirstVertToLastVert() < 1e-6))
-                {
+                Point2d vert(input_elt->Float64(zone_end_index), input_elt->Float64(zone_end_index + 1));
+                if(zone_polygon_verts.empty()){
+                    first_vert = vert;
+                } 
+                if (!zone_polygon_verts.empty() && arePointsClose(first_vert, vert)){
+                    zone_polygon_verts.push_back(vert); 
                     break;
                 }
+                zone_polygon_verts.push_back(vert);                
+                zone_end_index += 2;
             }
+
+
 
             // parse static obstacles
             current_index = zone_end_index + 2; // skip the two values indicating the number of static obstacles
 
-            Obstacles static_obstacles;
+            std::vector<std::vector<Point2d>> static_obstacles_verts;
             while (current_index < zone_area_size)
             {
-                coast::Polygon curr_static_obs;
+                std::vector<Point2d> curr_static_obs_verts;
                 size_t obs_end_index = current_index;
 
                 while (obs_end_index + 1 < zone_area_size)
                 {
                     double x = input_elt->Float64(obs_end_index);
                     double y = input_elt->Float64(obs_end_index + 1);
-                    coast::Point2d point(x, y);
-
-                    curr_static_obs.addVertex(point);
+                    curr_static_obs_verts.emplace_back(x, y);
                     obs_end_index += 2;
 
-                    if (curr_static_obs.numVertices() >= 3 &&
-                        (curr_static_obs.distFirstVertToLastVert() < 1e-6))
+                    if ((curr_static_obs_verts.size() >= 3) &&
+                        arePointsClose(curr_static_obs_verts.front(), curr_static_obs_verts.back()))
                     {
-                        static_obstacles.push_back(curr_static_obs);
+                        static_obstacles_verts.push_back(curr_static_obs_verts);
                         break; // break if we found a closed polygon
                     }
                 }
                 current_index = obs_end_index;
             }
 
-            // Update the zone area data
             {
                 std::lock_guard<std::mutex> lock(mtx);
                 _ZoneArea.id = zone_area_id_received;
-                _ZoneArea.polygon = std::move(zone_polygon);
-                _ZoneArea.static_obstacles = std::move(static_obstacles);
+                for(auto& vert : zone_polygon_verts)
+                {
+                    _ZoneArea.zone_area.outer().push_back(vert);
+                }
+                bg::correct(_ZoneArea.zone_area);
+                // Update the zone area data
+                for(auto& static_obs_verts : static_obstacles_verts){
+                    Polygon2d curr_sta_obs;
+                    for(auto& static_obs_vert : static_obs_verts){
+                        curr_sta_obs.outer().push_back(static_obs_vert);
+                    }
+                    bg::correct(curr_sta_obs);
+                    _ZoneArea.static_obstacles.push_back(curr_sta_obs);
+                }
             }
+
             ReportInfo(MAPSStreamedString() << "Zone area data for zone ID " << zone_area_id_received << " processed.");
+
+            if(_PrintDebugInfo){
+                std::string msg = "Zone area polygon : (";
+
+                for(auto& verts : _ZoneArea.zone_area.outer()){
+                    msg += "("  + std::to_string(bg::get<0>(verts)) + ", " + std::to_string(bg::get<1>(verts)) + "),";
+                }
+                msg.pop_back();
+                msg += ")";
+                ReportInfo(msg.c_str());
+            }
+
+            _IsZoneAreaAvailable = true;
         }
     }
 }
@@ -216,12 +272,14 @@ void MAPSSGCoastPathPlanner::ReadShapesDebug()
 {
     if (!DataAvailableInFIFO(Input("iShapesDebug")))
     {
+        ReportInfo("Data Not Available at iShapesDebug in Coast Maneuvers");
         return;
     }
 
     MAPSIOElt *input_elt = StartReading(Input("iShapesDebug"));
     if (input_elt == nullptr)
     {
+        ReportInfo("input is empty for iShapesDebug in Coast Maneuvers");
         return;
     }
 
@@ -233,7 +291,7 @@ void MAPSSGCoastPathPlanner::ReadShapesDebug()
     }
 
     // parse shapes
-    _Shapes.clear();
+    _DynamicObstacles.clear();
     int current_idx = 0;
     int remaining_data = size;
 
@@ -247,7 +305,7 @@ void MAPSSGCoastPathPlanner::ReadShapesDebug()
             break;
         }
 
-        coast::Polygon poly;
+        Polygon2d poly;
         for (int i = 0; i < nb_points; ++i)
         {
             if (current_idx + 1 >= size)
@@ -257,7 +315,7 @@ void MAPSSGCoastPathPlanner::ReadShapesDebug()
             double x = input_elt->Float64(current_idx++);
             double y = input_elt->Float64(current_idx++);
             remaining_data -= 2;
-            poly.addVertex(x, y);
+            poly.outer().emplace_back(x, y);
         }
 
         if (remaining_data > 0 && current_idx < size)
@@ -266,17 +324,29 @@ void MAPSSGCoastPathPlanner::ReadShapesDebug()
             --remaining_data;
         }
 
-        if (poly.numVertices() >= 3)
+        if (poly.outer().size() >= 3)
         {
-            _Shapes.push_back(poly);
+            _DynamicObstacles.push_back(poly);
         }
     }
 
-    ReportInfo(MAPSStreamedString() << "Shapes debug data processed. " << _Shapes.size() << " shapes found.");
+    ReportInfo(MAPSStreamedString() << "Shapes debug data processed. " << _DynamicObstacles.size() << " shapes found.");
 }
 
-// std::vector<Pose> MAPSSGCoastPathPlanner::PlanPath() const
-// {
+HybridAStarPlannerResult MAPSSGCoastPathPlanner::PlanPath(const Pose2d& start)
+{
 
-//     return path;
-// }
+    auto maneuvering_zone = std::make_shared<zones::ManeuveringZone>(_ZoneArea.zone_area, "rtmaps_zone"); 
+    std::vector<std::shared_ptr<zones::Zone>> zones{maneuvering_zone};
+    planning::HybridAStarPlanner planner(*_Robot, zones, _PlanningBehaviors);
+
+    planning::HybridAStarPlannerRequest request;
+    request.start = start;
+    request.goal = _DestinationForManeuvers.goal_pose;
+    request.initial_behavior_name = GetStringProperty("planner_behavior_profile");
+    request.transition_behavior_name.clear();
+    request.dual_model_lut_path.clear();
+
+    return planner.plan(request);
+
+}

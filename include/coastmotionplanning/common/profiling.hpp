@@ -1,5 +1,8 @@
 #pragma once
 
+#define NOMINMAX
+#include <windows.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -26,7 +29,7 @@ public:
         summary.scope_name = scope_name;
         ++summary.count;
         summary.total_ms += elapsed_ms;
-        summary.max_ms = std::max(summary.max_ms, elapsed_ms);
+        summary.max_ms = (std::max)(summary.max_ms, elapsed_ms);
     }
 
     std::vector<ProfilingScopeSummary> snapshotSortedByTotalMs() const {
@@ -59,7 +62,7 @@ public:
             summary.scope_name = other_summary.scope_name;
             summary.count += other_summary.count;
             summary.total_ms += other_summary.total_ms;
-            summary.max_ms = std::max(summary.max_ms, other_summary.max_ms);
+            summary.max_ms = (std::max)(summary.max_ms, other_summary.max_ms);
         }
     }
 

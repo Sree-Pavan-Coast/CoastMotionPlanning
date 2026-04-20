@@ -173,6 +173,32 @@ PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
         robot_name);
 }
 
+PlannerBehaviorSet loadBehaviorSetWithoutAnalyticExpansion(
+    const std::vector<std::string>& profile_names,
+    const std::string& robot_name = "Pro_XD") {
+    const std::filesystem::path temp_dir =
+        std::filesystem::temp_directory_path() / "coastmotionplanning_hybrid_astar_test";
+    std::filesystem::create_directories(temp_dir);
+
+    std::string behaviors = readFile(repoPath("configs/planner_behaviors.yaml"));
+    for (const auto& profile_name : profile_names) {
+        replaceBehaviorProfileScalar(behaviors, profile_name, "analytic_shot", "false");
+        replaceBehaviorProfileScalar(
+            behaviors,
+            profile_name,
+            "near_goal_analytic_expansion",
+            "false");
+    }
+
+    std::ofstream behavior_file(temp_dir / "planner_behaviors.yaml");
+    behavior_file << behaviors;
+    behavior_file.close();
+
+    return applyRobotConstraints(
+        PlannerBehaviorSet::loadFromFile((temp_dir / "planner_behaviors.yaml").string()),
+        robot_name);
+}
+
 double straightPrimitiveLengthM(const PlannerBehaviorProfile& profile) {
     coastmotionplanning::motion_primitives::MotionTableConfig motion_config;
     motion_config.minimum_turning_radius = static_cast<float>(
@@ -208,15 +234,16 @@ std::shared_ptr<coastmotionplanning::zones::TrackMainRoad> makeTrackZone(
     double max_y,
     const std::string& behavior = "") {
     auto zone = std::make_shared<coastmotionplanning::zones::TrackMainRoad>(
-        makeRectangle(min_x, min_y, max_x, max_y), "track");
-    zone->addLaneFromPoints({
-        {min_x + 1.0, min_y + ((max_y - min_y) * 0.25)},
-        {max_x - 1.0, min_y + ((max_y - min_y) * 0.25)}
-    });
-    zone->addLaneFromPoints({
-        {max_x - 1.0, min_y + ((max_y - min_y) * 0.75)},
-        {min_x + 1.0, min_y + ((max_y - min_y) * 0.75)}
-    });
+        makeRectangle(min_x, min_y, max_x, max_y),
+        std::vector<coastmotionplanning::geometry::Point2d>{
+            {min_x + 1.0, min_y + ((max_y - min_y) * 0.5)},
+            {max_x - 1.0, min_y + ((max_y - min_y) * 0.5)}
+        },
+        std::vector<double>{
+            (max_y - min_y) * 0.25,
+            (max_y - min_y) * 0.25
+        },
+        "track");
     if (!behavior.empty()) {
         zone->setPlannerBehavior(behavior);
     }
@@ -349,30 +376,27 @@ TEST(HybridAStarPlannerTest, SameZoneCarPlanningSucceeds) {
     EXPECT_EQ(result.segment_directions.size(), result.poses.size() - 1);
 }
 
-TEST(HybridAStarPlannerTest, CrossZonePlanningShowsBehaviorSwitch) {
-    const PlannerBehaviorSet behavior_set = loadBehaviorSet();
+TEST(HybridAStarPlannerTest, CrossZonePlanningCanExhaustFrontierUnderTightBoundary) {
+    auto behavior_set = loadBehaviorSetWithoutAnalyticExpansion(
+        {"relaxed_profile", "primary_profile", "parking_profile"});
+    behavior_set.setMinimumPlanningTimeMs(1500);
     const Car car = makeCar();
     std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         makeTrackZone(0.0, -4.0, 10.0, 4.0),
-        makeManeuveringZone(10.0, -4.0, 20.0, 4.0, "parking_profile")
+        makeManeuveringZone(12.0, -4.0, 22.0, 4.0, "parking_profile")
     };
 
     HybridAStarPlanner planner(car, zones, behavior_set);
     HybridAStarPlannerRequest request;
     request.start = makePose(2.0, 0.0);
-    request.goal = makePose(15.0, 0.0);
-    request.initial_behavior_name = "primary_profile";
+    request.goal = makePose(17.0, 0.0);
+    request.initial_behavior_name = "relaxed_profile";
+    request.transition_behavior_name = "primary_profile";
 
     const auto result = planner.plan(request);
 
-    ASSERT_TRUE(result.success) << result.detail;
-    ASSERT_FALSE(result.behavior_sequence.empty());
-    EXPECT_EQ(result.behavior_sequence.front(), "primary_profile");
-    EXPECT_EQ(result.behavior_sequence.back(), "parking_profile");
-    EXPECT_NE(std::find(result.behavior_sequence.begin(),
-                        result.behavior_sequence.end(),
-                        "parking_profile"),
-              result.behavior_sequence.end());
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.detail.find("exhausted the frontier"), std::string::npos) << result.detail;
 }
 
 TEST(HybridAStarPlannerTest, MissingInitialBehaviorFailsFast) {

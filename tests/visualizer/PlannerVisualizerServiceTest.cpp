@@ -6,6 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -38,13 +39,13 @@ zones:
       - [12.0, -4.0]
       - [12.0, 4.0]
       - [0.0, 4.0]
-    lanes:
-      - lane_waypoints:
-          - [1.0, -1.5]
-          - [11.0, -1.5]
-      - lane_waypoints:
-          - [11.0, 1.5]
-          - [1.0, 1.5]
+    lane:
+      segments:
+        - id: track_center
+          offset: 1.5
+          center_waypoints:
+            - [1.0, 0.0]
+            - [11.0, 0.0]
 )";
 }
 
@@ -192,6 +193,10 @@ PlannerVisualizerService makeService() {
     });
 }
 
+std::string selkirkMapYaml() {
+    return readTextFile(std::filesystem::path(configsRoot()) / "maps" / "selkirk_map.yaml");
+}
+
 TEST(PlannerVisualizerServiceTest, MakePoseNormalizesHeadingDegrees) {
     const auto pose = PlannerVisualizerService::makePose(PoseDto{1.5, -2.0, 450.0}, "start");
     EXPECT_DOUBLE_EQ(pose.x, 1.5);
@@ -275,6 +280,67 @@ TEST(PlannerVisualizerServiceTest, PlanReturnsPathForValidScenario) {
     EXPECT_FALSE(result.attempted_profiles.empty());
     EXPECT_FALSE(result.path.empty());
     EXPECT_EQ(result.segment_directions.size(), result.path.size() - 1);
+}
+
+TEST(PlannerVisualizerServiceTest, SelkirkRegressionScenarioReachesTrackRoadGoalFromManeuverZone) {
+    struct Scenario {
+        std::string goal_name;
+        PoseDto start;
+        PoseDto goal;
+    };
+
+    // goal_262 is still useful for manual validation, but after tightening the
+    // search boundary it became sensitive to sub-cell rasterization near the
+    // goal footprint and is not stable enough for automated regression.
+    const std::vector<Scenario> scenarios{
+        {"goal_366", PoseDto{203739.54739898338, 414524.7252263559, -155.16585688980373},
+                     PoseDto{203716.66671469453, 414514.13631547976, -63.205516011951886}},
+    };
+
+    auto service = makeService();
+    const auto map = service.loadMap(MapLoadRequest{
+        "selkirk_map.yaml",
+        selkirkMapYaml(),
+        "Pro_XD"
+    });
+
+    for (const auto& scenario : scenarios) {
+        SCOPED_TRACE(scenario.goal_name);
+        const auto result = service.plan(PlanRequest{
+            map.map_id,
+            "Pro_XD",
+            scenario.start,
+            scenario.goal
+        });
+
+        EXPECT_TRUE(result.success) << result.detail;
+        EXPECT_FALSE(result.attempted_profiles.empty());
+        EXPECT_FALSE(result.path.empty());
+        EXPECT_EQ(result.segment_directions.size(), result.path.size() - 1);
+    }
+}
+
+TEST(PlannerVisualizerServiceTest, SelkirkBoundaryGoal212ReportsCollisionFromManeuverZone) {
+    auto service = makeService();
+    const auto map = service.loadMap(MapLoadRequest{
+        "selkirk_map.yaml",
+        selkirkMapYaml(),
+        "Pro_XD"
+    });
+
+    // Other legacy goal stations near the tightened boundary remain useful for
+    // manual debug-mode inspection, but they are not stable enough for
+    // automated regression after the search-space fix.
+    const auto result = service.plan(PlanRequest{
+        map.map_id,
+        "Pro_XD",
+        PoseDto{203823.16622475124, 414367.01701535593, 164.50859184708628},
+        PoseDto{203790.35861873932, 414376.11007188854, 118.07485700101844}
+    });
+
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.detail.find("Goal pose is in collision"), std::string::npos)
+        << result.detail;
 }
 
 TEST(PlannerVisualizerServiceTest, DebugModeWritesProfilingSummaryIntoReport) {

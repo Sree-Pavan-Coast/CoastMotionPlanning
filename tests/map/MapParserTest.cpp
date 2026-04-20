@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <fstream>
 #include <optional>
 
@@ -49,13 +50,13 @@ protected:
                   << "      - [10.0, 0.0]\n"
                   << "      - [10.0, 6.0]\n"
                   << "      - [0.0, 6.0]\n"
-                  << "    lanes:\n"
-                  << "      - lane_waypoints:\n"
-                  << "          - [1.0, 2.0]\n"
-                  << "          - [9.0, 2.0]\n"
-                  << "      - lane_waypoints:\n"
-                  << "          - [9.0, 4.0]\n"
-                  << "          - [1.0, 4.0]\n";
+                  << "    lane:\n"
+                  << "      segments:\n"
+                  << "        - id: 1\n"
+                  << "          offset: 1.0\n"
+                  << "          center_waypoints:\n"
+                  << "            - [1.0, 3.0]\n"
+                  << "            - [9.0, 3.0]\n";
         ofs_world.close();
 
         std::ofstream ofs_scaled("scaled_lat_lon_map.yaml");
@@ -94,7 +95,6 @@ protected:
                      << "      - [-122.3958, 49.3180]\n";
         ofs_long_lat.close();
 
-        // Create a temporary invalid YAML map (missing model_metric for geographic coordinates)
         std::ofstream ofs_inv("invalid_map.yaml");
         ofs_inv << "maps:\n"
                 << "  name: \"Invalid Map\"\n"
@@ -123,13 +123,13 @@ protected:
                     << "      - [10.0, 0.0]\n"
                     << "      - [10.0, 5.0]\n"
                     << "      - [0.0, 5.0]\n"
-                    << "    lanes:\n"
-                    << "      - lane_waypoints:\n"
-                    << "          - [1.0, 1.5]\n"
-                    << "          - [9.0, 1.5]\n"
-                    << "      - lane_waypoints:\n"
-                    << "          - [9.0, 3.5]\n"
-                    << "          - [1.0, 3.5]\n"
+                    << "    lane:\n"
+                    << "      segments:\n"
+                    << "        - id: default_track_center\n"
+                    << "          offset: 1.0\n"
+                    << "          center_waypoints:\n"
+                    << "            - [1.0, 2.5]\n"
+                    << "            - [9.0, 2.5]\n"
                     << "  - name: \"implicit_default_maneuvering\"\n"
                     << "    type: \"ManeuveringZone\"\n"
                     << "    coordinate_type: \"world\"\n"
@@ -197,29 +197,25 @@ TEST_F(MapParserTest, ThrowsOnDeprecatedZoneId) {
 }
 
 TEST_F(MapParserTest, ConvertsLatLonToWorld) {
-    auto zones = MapParser::parse("valid_lat_lon_map.yaml");
-    ASSERT_EQ(zones.size(), 1);
+    const auto zones = MapParser::parse("valid_lat_lon_map.yaml");
+    ASSERT_EQ(zones.size(), 1u);
 
-    auto polygon = zones[0]->getPolygon();
-    ASSERT_EQ(polygon.outer().size(), 2);
-
-    // Origin point should be (0,0) in world if the model metric is 1.
+    const auto polygon = zones[0]->getPolygon();
+    ASSERT_EQ(polygon.outer().size(), 2u);
     EXPECT_NEAR(polygon.outer()[0].x(), 0.0, 1e-6);
     EXPECT_NEAR(polygon.outer()[0].y(), 0.0, 1e-6);
     EXPECT_EQ(zones[0]->getPlannerBehavior().value_or(""), "parking_profile");
     EXPECT_EQ(zones[0]->getResolvedPlannerBehavior(), "parking_profile");
-
-    // Point 2 is North of point 1, check if y is positive
     EXPECT_GT(polygon.outer()[1].y(), 0.0);
-    EXPECT_NEAR(polygon.outer()[1].x(), 0.0, 1e-3); // Longitude is same, so x approx 0
+    EXPECT_NEAR(polygon.outer()[1].x(), 0.0, 1e-3);
 }
 
 TEST_F(MapParserTest, KeepsWorldCoordinatesWithoutGeographicOrigin) {
-    auto zones = MapParser::parse("valid_world_map.yaml");
-    ASSERT_EQ(zones.size(), 2);
+    const auto zones = MapParser::parse("valid_world_map.yaml");
+    ASSERT_EQ(zones.size(), 2u);
 
-    auto polygon = zones[0]->getPolygon();
-    ASSERT_EQ(polygon.outer().size(), 2);
+    const auto polygon = zones[0]->getPolygon();
+    ASSERT_EQ(polygon.outer().size(), 2u);
     EXPECT_DOUBLE_EQ(polygon.outer()[0].x(), 1.0);
     EXPECT_DOUBLE_EQ(polygon.outer()[0].y(), 2.0);
     EXPECT_DOUBLE_EQ(polygon.outer()[1].x(), 3.0);
@@ -228,15 +224,21 @@ TEST_F(MapParserTest, KeepsWorldCoordinatesWithoutGeographicOrigin) {
     EXPECT_EQ(zones[0]->getResolvedPlannerBehavior(), "primary_profile");
 }
 
-TEST_F(MapParserTest, ParsesMultipleLanesForTrackRoadZone) {
-    auto zones = MapParser::parse("valid_world_map.yaml");
-    ASSERT_EQ(zones.size(), 2);
+TEST_F(MapParserTest, ParsesSegmentedTrackRoadZone) {
+    const auto zones = MapParser::parse("valid_world_map.yaml");
+    ASSERT_EQ(zones.size(), 2u);
 
-    auto track = std::dynamic_pointer_cast<coastmotionplanning::zones::TrackMainRoad>(zones[1]);
+    const auto track =
+        std::dynamic_pointer_cast<coastmotionplanning::zones::TrackMainRoad>(zones[1]);
     ASSERT_NE(track, nullptr);
+    ASSERT_EQ(track->getCenterline().size(), 2u);
+    ASSERT_EQ(track->getOffsets().size(), 2u);
     ASSERT_EQ(track->getLanes().size(), 2u);
     ASSERT_EQ(track->getLanes()[0].size(), 2u);
     ASSERT_EQ(track->getLanes()[1].size(), 2u);
+    EXPECT_DOUBLE_EQ(track->getCenterline()[0].x, 1.0);
+    EXPECT_DOUBLE_EQ(track->getCenterline()[0].y, 3.0);
+    EXPECT_DOUBLE_EQ(track->getOffsets()[0], 1.0);
     EXPECT_DOUBLE_EQ(track->getLanes()[0][0].x, 1.0);
     EXPECT_DOUBLE_EQ(track->getLanes()[0][0].y, 2.0);
     EXPECT_DOUBLE_EQ(track->getLanes()[1][0].x, 9.0);
@@ -244,27 +246,27 @@ TEST_F(MapParserTest, ParsesMultipleLanesForTrackRoadZone) {
 }
 
 TEST_F(MapParserTest, AppliesModelMetricToLatLonConversion) {
-    auto base_zones = MapParser::parse("valid_lat_lon_map.yaml");
-    auto scaled_zones = MapParser::parse("scaled_lat_lon_map.yaml");
+    const auto base_zones = MapParser::parse("valid_lat_lon_map.yaml");
+    const auto scaled_zones = MapParser::parse("scaled_lat_lon_map.yaml");
 
-    ASSERT_EQ(base_zones.size(), 1);
-    ASSERT_EQ(scaled_zones.size(), 1);
+    ASSERT_EQ(base_zones.size(), 1u);
+    ASSERT_EQ(scaled_zones.size(), 1u);
 
     const auto& base_polygon = base_zones[0]->getPolygon();
     const auto& scaled_polygon = scaled_zones[0]->getPolygon();
-    ASSERT_EQ(base_polygon.outer().size(), 2);
-    ASSERT_EQ(scaled_polygon.outer().size(), 2);
+    ASSERT_EQ(base_polygon.outer().size(), 2u);
+    ASSERT_EQ(scaled_polygon.outer().size(), 2u);
 
     EXPECT_NEAR(scaled_polygon.outer()[1].x(), 2.0 * base_polygon.outer()[1].x(), 1e-3);
     EXPECT_NEAR(scaled_polygon.outer()[1].y(), 2.0 * base_polygon.outer()[1].y(), 1e-3);
 }
 
 TEST_F(MapParserTest, ConvertsLongLatToWorld) {
-    auto zones = MapParser::parse("valid_long_lat_map.yaml");
-    ASSERT_EQ(zones.size(), 1);
+    const auto zones = MapParser::parse("valid_long_lat_map.yaml");
+    ASSERT_EQ(zones.size(), 1u);
 
-    auto polygon = zones[0]->getPolygon();
-    ASSERT_EQ(polygon.outer().size(), 2);
+    const auto polygon = zones[0]->getPolygon();
+    ASSERT_EQ(polygon.outer().size(), 2u);
     EXPECT_NEAR(polygon.outer()[0].x(), 0.0, 1e-6);
     EXPECT_NEAR(polygon.outer()[0].y(), 0.0, 1e-6);
     EXPECT_GT(polygon.outer()[1].y(), 0.0);
@@ -276,8 +278,8 @@ TEST_F(MapParserTest, ThrowsOnFileMissing) {
 }
 
 TEST_F(MapParserTest, LeavesBehaviorUnsetWhenBehaviorIsDefaultOrMissing) {
-    auto zones = MapParser::parse("default_behavior_map.yaml");
-    ASSERT_EQ(zones.size(), 2);
+    const auto zones = MapParser::parse("default_behavior_map.yaml");
+    ASSERT_EQ(zones.size(), 2u);
 
     EXPECT_FALSE(zones[0]->hasExplicitPlannerBehavior());
     EXPECT_EQ(zones[0]->getPlannerBehavior(), std::nullopt);
@@ -301,19 +303,20 @@ zones:
       - [8.0, -2.0]
       - [8.0, 2.0]
       - [0.0, 2.0]
-    lanes:
-      - lane_waypoints:
-          - [1.0, 0.0]
-          - [7.0, 0.0]
-      - lane_waypoints:
-          - [7.0, 1.0]
-          - [1.0, 1.0]
+    lane:
+      segments:
+        - id: inline_center
+          offset: 0.5
+          center_waypoints:
+            - [1.0, 0.5]
+            - [7.0, 0.5]
 )";
 
     const auto zones = MapParser::parseFromString(yaml, "inline-map");
     ASSERT_EQ(zones.size(), 1u);
 
-    const auto track = std::dynamic_pointer_cast<coastmotionplanning::zones::TrackMainRoad>(zones[0]);
+    const auto track =
+        std::dynamic_pointer_cast<coastmotionplanning::zones::TrackMainRoad>(zones[0]);
     ASSERT_NE(track, nullptr);
     EXPECT_TRUE(track->getResolvedPlannerBehavior().empty());
     ASSERT_EQ(track->getLanes().size(), 2u);
@@ -322,10 +325,10 @@ zones:
     EXPECT_DOUBLE_EQ(track->getLanes()[0][0].y, 0.0);
 }
 
-TEST_F(MapParserTest, RejectsTrackRoadWithSingleLane) {
+TEST_F(MapParserTest, RejectsTrackRoadWithDeprecatedLanesField) {
     const std::string yaml = R"(
 maps:
-  name: "Single Lane"
+  name: "Deprecated Lanes"
 zones:
   - name: "track"
     type: "TrackMainRoad"
@@ -341,13 +344,13 @@ zones:
           - [7.0, -0.5]
 )";
 
-    EXPECT_THROW(MapParser::parseFromString(yaml, "single-lane-map"), std::invalid_argument);
+    EXPECT_THROW(MapParser::parseFromString(yaml, "deprecated-lanes-map"), std::runtime_error);
 }
 
-TEST_F(MapParserTest, RejectsTrackRoadWithSameDirectionLanes) {
+TEST_F(MapParserTest, RejectsTrackRoadWithDeprecatedFlatLaneFields) {
     const std::string yaml = R"(
 maps:
-  name: "Same Direction"
+  name: "Deprecated Flat Lane"
 zones:
   - name: "track"
     type: "TrackMainRoad"
@@ -357,19 +360,182 @@ zones:
       - [8.0, -2.0]
       - [8.0, 2.0]
       - [0.0, 2.0]
-    lanes:
-      - lane_waypoints:
-          - [1.0, -0.5]
-          - [7.0, -0.5]
-      - lane_waypoints:
-          - [1.0, 0.5]
-          - [7.0, 0.5]
+    lane:
+      center_waypoints:
+        - [1.0, 0.0]
+        - [7.0, 0.0]
+      offsets:
+        - 0.5
+        - 0.5
 )";
 
-    EXPECT_THROW(MapParser::parseFromString(yaml, "same-direction-map"), std::invalid_argument);
+    EXPECT_THROW(MapParser::parseFromString(yaml, "deprecated-flat-map"), std::runtime_error);
 }
 
-TEST(TrackMainRoadValidationTest, RejectsThirdLaneDuringIncrementalConstruction) {
+TEST_F(MapParserTest, RejectsTrackRoadWithDuplicateSegmentIds) {
+    const std::string yaml = R"(
+maps:
+  name: "Duplicate Segment Ids"
+zones:
+  - name: "track"
+    type: "TrackMainRoad"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, -2.0]
+      - [8.0, -2.0]
+      - [8.0, 2.0]
+      - [0.0, 2.0]
+    lane:
+      segments:
+        - id: repeated
+          offset: 0.5
+          center_waypoints:
+            - [1.0, 0.0]
+            - [4.0, 0.0]
+        - id: repeated
+          offset: 0.5
+          center_waypoints:
+            - [4.0, 0.0]
+            - [7.0, 0.0]
+)";
+
+    EXPECT_THROW(MapParser::parseFromString(yaml, "duplicate-segment-id-map"), std::runtime_error);
+}
+
+TEST_F(MapParserTest, RejectsTrackRoadWithNonScalarSegmentId) {
+    const std::string yaml = R"(
+maps:
+  name: "Non Scalar Segment Id"
+zones:
+  - name: "track"
+    type: "TrackMainRoad"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, -2.0]
+      - [8.0, -2.0]
+      - [8.0, 2.0]
+      - [0.0, 2.0]
+    lane:
+      segments:
+        - id:
+            nested: bad
+          offset: 0.5
+          center_waypoints:
+            - [1.0, 0.0]
+            - [7.0, 0.0]
+)";
+
+    EXPECT_THROW(MapParser::parseFromString(yaml, "non-scalar-segment-id-map"), std::runtime_error);
+}
+
+TEST_F(MapParserTest, RejectsTrackRoadWithNegativeOffset) {
+    const std::string yaml = R"(
+maps:
+  name: "Negative Offset"
+zones:
+  - name: "track"
+    type: "TrackMainRoad"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, -2.0]
+      - [8.0, -2.0]
+      - [8.0, 2.0]
+      - [0.0, 2.0]
+    lane:
+      segments:
+        - id: negative
+          offset: -0.5
+          center_waypoints:
+            - [1.0, 0.0]
+            - [7.0, 0.0]
+)";
+
+    EXPECT_THROW(MapParser::parseFromString(yaml, "negative-offset-map"), std::invalid_argument);
+}
+
+TEST_F(MapParserTest, RejectsTrackRoadWithCollapsedSinglePointSegment) {
+    const std::string yaml = R"(
+maps:
+  name: "Collapsed Single Point"
+zones:
+  - name: "track"
+    type: "TrackMainRoad"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, -2.0]
+      - [8.0, -2.0]
+      - [8.0, 2.0]
+      - [0.0, 2.0]
+    lane:
+      segments:
+        - id: duplicate_points
+          offset: 0.5
+          center_waypoints:
+            - [1.0, 0.0]
+            - [1.0, 0.0]
+)";
+
+    EXPECT_THROW(MapParser::parseFromString(yaml, "collapsed-single-point-map"), std::invalid_argument);
+}
+
+TEST_F(MapParserTest, RejectsTrackRoadWhenBridgeLeavesPolygon) {
+    const std::string yaml = R"(
+maps:
+  name: "Bridge Leaves Polygon"
+zones:
+  - name: "track"
+    type: "TrackMainRoad"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, 0.0]
+      - [8.0, 0.0]
+      - [8.0, 2.0]
+      - [2.0, 2.0]
+      - [2.0, 8.0]
+      - [0.0, 8.0]
+    lane:
+      segments:
+        - id: horizontal
+          offset: 0.25
+          center_waypoints:
+            - [1.0, 1.0]
+            - [7.0, 1.0]
+        - id: vertical
+          offset: 0.25
+          center_waypoints:
+            - [1.0, 7.0]
+            - [1.0, 3.0]
+)";
+
+    EXPECT_THROW(MapParser::parseFromString(yaml, "bridge-leaves-polygon-map"), std::invalid_argument);
+}
+
+TEST_F(MapParserTest, RejectsTrackRoadWhenDerivedLaneLeavesPolygon) {
+    const std::string yaml = R"(
+maps:
+  name: "Derived Lane Outside"
+zones:
+  - name: "track"
+    type: "TrackMainRoad"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, -2.0]
+      - [8.0, -2.0]
+      - [8.0, 2.0]
+      - [0.0, 2.0]
+    lane:
+      segments:
+        - id: high_centerline
+          offset: 0.5
+          center_waypoints:
+            - [1.0, 1.75]
+            - [7.0, 1.75]
+)";
+
+    EXPECT_THROW(MapParser::parseFromString(yaml, "derived-lane-outside-map"), std::invalid_argument);
+}
+
+TEST(TrackMainRoadValidationTest, BuildsDerivedOppositeDirectionLanesFromCenterline) {
     coastmotionplanning::geometry::Polygon2d polygon;
     polygon.outer() = {
         coastmotionplanning::geometry::Point2d(0.0, 0.0),
@@ -380,19 +546,130 @@ TEST(TrackMainRoadValidationTest, RejectsThirdLaneDuringIncrementalConstruction)
     };
 
     coastmotionplanning::zones::TrackMainRoad track(polygon, "track");
-    track.addLaneFromPoints({
+    track.setCenterlineFromPoints({
         coastmotionplanning::geometry::Point2d(1.0, 1.5),
         coastmotionplanning::geometry::Point2d(9.0, 1.5)
-    });
-    track.addLaneFromPoints({
-        coastmotionplanning::geometry::Point2d(9.0, 4.5),
-        coastmotionplanning::geometry::Point2d(1.0, 4.5)
+    }, {1.0, 1.0});
+
+    ASSERT_EQ(track.getCenterline().size(), 2u);
+    ASSERT_EQ(track.getLanes().size(), 2u);
+    EXPECT_DOUBLE_EQ(track.getLanes()[0][0].x, 1.0);
+    EXPECT_DOUBLE_EQ(track.getLanes()[0][0].y, 0.5);
+    EXPECT_DOUBLE_EQ(track.getLanes()[1][0].x, 9.0);
+    EXPECT_DOUBLE_EQ(track.getLanes()[1][0].y, 2.5);
+    EXPECT_NEAR(track.getLanes()[0][0].theta.degrees(), 0.0, 1e-6);
+    EXPECT_NEAR(std::abs(track.getLanes()[1][0].theta.degrees()), 180.0, 1e-6);
+}
+
+TEST(TrackMainRoadValidationTest, StitchesSeparatedSegmentsIntoCanonicalCenterline) {
+    coastmotionplanning::geometry::Polygon2d polygon;
+    polygon.outer() = {
+        coastmotionplanning::geometry::Point2d(0.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 6.0),
+        coastmotionplanning::geometry::Point2d(0.0, 6.0),
+        coastmotionplanning::geometry::Point2d(0.0, 0.0)
+    };
+
+    coastmotionplanning::zones::TrackMainRoad track(polygon, "track");
+    track.setCenterlineSegments({
+        {"segment_a", 1.0, {
+            coastmotionplanning::geometry::Point2d(1.0, 3.0),
+            coastmotionplanning::geometry::Point2d(4.0, 3.0)
+        }},
+        {"segment_b", 1.0, {
+            coastmotionplanning::geometry::Point2d(6.0, 3.0),
+            coastmotionplanning::geometry::Point2d(9.0, 3.0)
+        }}
     });
 
-    EXPECT_THROW(
-        track.addLaneFromPoints({
+    ASSERT_EQ(track.getCenterline().size(), 4u);
+    EXPECT_DOUBLE_EQ(track.getCenterline()[1].x, 4.0);
+    EXPECT_DOUBLE_EQ(track.getCenterline()[2].x, 6.0);
+    EXPECT_DOUBLE_EQ(track.getOffsets()[0], 1.0);
+    EXPECT_DOUBLE_EQ(track.getOffsets()[3], 1.0);
+}
+
+TEST(TrackMainRoadValidationTest, TouchingSegmentsWithDifferentOffsetsTaperAcrossNextSpan) {
+    coastmotionplanning::geometry::Polygon2d polygon;
+    polygon.outer() = {
+        coastmotionplanning::geometry::Point2d(0.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 8.0),
+        coastmotionplanning::geometry::Point2d(0.0, 8.0),
+        coastmotionplanning::geometry::Point2d(0.0, 0.0)
+    };
+
+    coastmotionplanning::zones::TrackMainRoad track(polygon, "track");
+    track.setCenterlineSegments({
+        {"segment_a", 1.0, {
+            coastmotionplanning::geometry::Point2d(1.0, 4.0),
+            coastmotionplanning::geometry::Point2d(5.0, 4.0)
+        }},
+        {"segment_b", 2.0, {
+            coastmotionplanning::geometry::Point2d(5.0, 4.0),
+            coastmotionplanning::geometry::Point2d(9.0, 4.0)
+        }}
+    });
+
+    ASSERT_EQ(track.getCenterline().size(), 3u);
+    ASSERT_EQ(track.getOffsets().size(), 3u);
+    EXPECT_DOUBLE_EQ(track.getOffsets()[0], 1.0);
+    EXPECT_DOUBLE_EQ(track.getOffsets()[1], 1.0);
+    EXPECT_DOUBLE_EQ(track.getOffsets()[2], 2.0);
+    EXPECT_DOUBLE_EQ(track.getLanes()[0][1].y, 3.0);
+    EXPECT_DOUBLE_EQ(track.getLanes()[0][2].y, 2.0);
+}
+
+TEST(TrackMainRoadValidationTest, CollapsesNearDuplicateJoinNoise) {
+    coastmotionplanning::geometry::Polygon2d polygon;
+    polygon.outer() = {
+        coastmotionplanning::geometry::Point2d(0.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 6.0),
+        coastmotionplanning::geometry::Point2d(0.0, 6.0),
+        coastmotionplanning::geometry::Point2d(0.0, 0.0)
+    };
+
+    coastmotionplanning::zones::TrackMainRoad track(polygon, "track");
+    track.setCenterlineSegments({
+        {"segment_a", 1.0, {
             coastmotionplanning::geometry::Point2d(1.0, 3.0),
+            coastmotionplanning::geometry::Point2d(5.0, 3.0)
+        }},
+        {"segment_b", 1.0, {
+            coastmotionplanning::geometry::Point2d(5.0 + 5e-7, 3.0),
             coastmotionplanning::geometry::Point2d(9.0, 3.0)
-        }),
+        }}
+    });
+
+    ASSERT_EQ(track.getCenterline().size(), 3u);
+    EXPECT_DOUBLE_EQ(track.getCenterline()[1].x, 5.0);
+    EXPECT_DOUBLE_EQ(track.getCenterline()[2].x, 9.0);
+}
+
+TEST(TrackMainRoadValidationTest, RejectsOutOfOrderSegments) {
+    coastmotionplanning::geometry::Polygon2d polygon;
+    polygon.outer() = {
+        coastmotionplanning::geometry::Point2d(0.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 0.0),
+        coastmotionplanning::geometry::Point2d(10.0, 6.0),
+        coastmotionplanning::geometry::Point2d(0.0, 6.0),
+        coastmotionplanning::geometry::Point2d(0.0, 0.0)
+    };
+
+    coastmotionplanning::zones::TrackMainRoad track(polygon, "track");
+    const std::vector<coastmotionplanning::zones::TrackMainRoadSegment> segments = {
+        {"segment_a", 1.0, {
+            coastmotionplanning::geometry::Point2d(1.0, 3.0),
+            coastmotionplanning::geometry::Point2d(5.0, 3.0)
+        }},
+        {"segment_b", 1.0, {
+            coastmotionplanning::geometry::Point2d(5.0, 3.0),
+            coastmotionplanning::geometry::Point2d(3.0, 3.0)
+        }}
+    };
+    EXPECT_THROW(
+        track.setCenterlineSegments(segments),
         std::invalid_argument);
 }

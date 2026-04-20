@@ -342,13 +342,21 @@ Current semantics:
 
 #### `zones/track_main_road.hpp`
 
+- `struct TrackMainRoadSegment`
+  - `std::string id`
+  - `double offset`
+  - `std::vector<geometry::Point2d> center_waypoints`
 - `class TrackMainRoad : public Zone`
   - default constructor
   - `TrackMainRoad(const geometry::Polygon2d& polygon, const std::optional<std::string>& name = std::nullopt)`
-  - `TrackMainRoad(const geometry::Polygon2d& polygon, const std::vector<std::vector<geometry::Point2d>>& lane_point_sequences, const std::optional<std::string>& name = std::nullopt)`
+  - `TrackMainRoad(const geometry::Polygon2d& polygon, const std::vector<TrackMainRoadSegment>& segments, const std::optional<std::string>& name = std::nullopt)`
+  - `TrackMainRoad(const geometry::Polygon2d& polygon, const std::vector<geometry::Point2d>& centerline_points, const std::vector<double>& offsets, const std::optional<std::string>& name = std::nullopt)`
+  - `const std::vector<math::Pose2d>& getCenterline() const`
+  - `const std::vector<double>& getOffsets() const`
   - `const std::vector<std::vector<math::Pose2d>>& getLanes() const`
-  - `void setLanes(const std::vector<std::vector<math::Pose2d>>& lanes)`
-  - `void addLaneFromPoints(const std::vector<geometry::Point2d>& points)`
+  - `void setCenterline(const std::vector<math::Pose2d>& centerline, const std::vector<double>& offsets)`
+  - `void setCenterlineSegments(const std::vector<TrackMainRoadSegment>& segments)`
+  - `void setCenterlineFromPoints(const std::vector<geometry::Point2d>& points, const std::vector<double>& offsets)`
   - `std::string getDefaultPlannerBehavior() const override`
   - `std::vector<std::string> getActiveLayers() const override`
   - `bool isReverseAllowed() const override`
@@ -362,7 +370,8 @@ Current semantics:
   - `lane_centerline_cost`
   - `holonomic_with_obstacles`
 - reverse is allowed unless the selected planner profile says otherwise
-- the zone requires exactly two valid, opposite-direction lanes
+- the zone accepts ordered authoring segments and stitches them into one canonical centerline plus per-waypoint offsets
+- the stitched centerline derives the two travel lanes internally
 
 ### `coastmotionplanning::map`
 
@@ -1067,7 +1076,7 @@ Response body is `PlanResponse` serialized to JSON:
   - `lat_long`
   - `long_lat`
 
-`TrackMainRoad` zones also require `lanes`, where each lane provides `lane_waypoints`.
+`TrackMainRoad` zones require one `lane` map with ordered `segments`, where each segment provides scalar `id`, scalar `offset`, and ordered `center_waypoints`.
 
 ## 7. Helper CLI app
 

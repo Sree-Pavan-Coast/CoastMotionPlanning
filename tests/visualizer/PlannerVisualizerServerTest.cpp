@@ -35,13 +35,13 @@ zones:
       - [12.0, -4.0]
       - [12.0, 4.0]
       - [0.0, 4.0]
-    lanes:
-      - lane_waypoints:
-          - [1.0, -1.5]
-          - [11.0, -1.5]
-      - lane_waypoints:
-          - [11.0, 1.5]
-          - [1.0, 1.5]
+    lane:
+      segments:
+        - id: track_center
+          offset: 1.5
+          center_waypoints:
+            - [1.0, 0.0]
+            - [11.0, 0.0]
 )";
 }
 

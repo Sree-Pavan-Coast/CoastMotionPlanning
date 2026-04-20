@@ -111,19 +111,31 @@ std::vector<std::shared_ptr<zones::Zone>> MapParser::parseDocument(
                 zone->setPlannerBehavior(planner_behavior);
                 zones_list.push_back(zone);
             } else if (type == "TrackMainRoad") {
-                std::vector<std::vector<geometry::Point2d>> lane_point_sequences;
                 if (zone_node["lanes"]) {
-                    for (const auto& lane_node : zone_node["lanes"]) {
-                        lane_point_sequences.push_back(parsePoints(
-                            lane_node["lane_waypoints"],
-                            coordinate_type,
-                            origin,
-                            model_metric.value_or(1.0),
-                            "lane_waypoints for zone '" + zone_label + "'"));
-                    }
+                    throw std::runtime_error(
+                        "Zone '" + zone_label +
+                        "' uses deprecated 'lanes'. Use 'lane.segments'.");
                 }
+
+                const auto& lane_node = zone_node["lane"];
+                if (!lane_node || !lane_node.IsMap()) {
+                    throw std::runtime_error(
+                        "Zone '" + zone_label + "' must define a 'lane' map.");
+                }
+                if (lane_node["center_waypoints"] || lane_node["offsets"]) {
+                    throw std::runtime_error(
+                        "Zone '" + zone_label +
+                        "' uses deprecated flat lane fields. Use 'lane.segments'.");
+                }
+                const auto segments = parseTrackMainRoadSegments(
+                    lane_node,
+                    coordinate_type,
+                    origin,
+                    model_metric.value_or(1.0),
+                    zone_label);
+
                 auto track = std::make_shared<zones::TrackMainRoad>(
-                    polygon, lane_point_sequences, name);
+                    polygon, segments, name);
                 track->setPlannerBehavior(planner_behavior);
                 zones_list.push_back(track);
             } else {
@@ -184,6 +196,68 @@ MapParser::CoordinateType MapParser::parseCoordinateType(const YAML::Node& zone_
     throw std::runtime_error(
         "Unsupported coordinate_type '" + coordinate_type + "' for zone '" + zone_label +
         "'. Expected one of: world, lat_long, long_lat.");
+}
+
+std::vector<zones::TrackMainRoadSegment> MapParser::parseTrackMainRoadSegments(
+    const YAML::Node& lane_node,
+    CoordinateType coordinate_type,
+    const std::optional<CoordinateTransform::LLA>& origin,
+    double model_metric,
+    const std::string& zone_label) {
+    const auto& segments_node = lane_node["segments"];
+    if (!segments_node || !segments_node.IsSequence() || segments_node.size() == 0) {
+        throw std::runtime_error(
+            "Zone '" + zone_label + "' must define a non-empty 'lane.segments' sequence.");
+    }
+
+    std::vector<zones::TrackMainRoadSegment> segments;
+    segments.reserve(segments_node.size());
+    std::unordered_set<std::string> segment_ids;
+    for (const auto& segment_node : segments_node) {
+        if (!segment_node.IsMap()) {
+            throw std::runtime_error(
+                "Each lane.segments entry for zone '" + zone_label + "' must be a YAML map.");
+        }
+
+        const auto& id_node = segment_node["id"];
+        if (!id_node || !id_node.IsScalar()) {
+            throw std::runtime_error(
+                "Each lane.segments entry for zone '" + zone_label +
+                "' must define a scalar 'id'.");
+        }
+        const std::string segment_id = id_node.Scalar();
+        if (segment_id.empty()) {
+            throw std::runtime_error(
+                "Each lane.segments entry for zone '" + zone_label +
+                "' must define a non-empty 'id'.");
+        }
+        if (!segment_ids.insert(segment_id).second) {
+            throw std::runtime_error(
+                "Zone '" + zone_label + "' reuses TrackMainRoad segment id '" + segment_id +
+                "'.");
+        }
+
+        const auto& offset_node = segment_node["offset"];
+        if (!offset_node || !offset_node.IsScalar()) {
+            throw std::runtime_error(
+                "TrackMainRoad segment '" + segment_id + "' for zone '" + zone_label +
+                "' must define scalar 'offset'.");
+        }
+
+        segments.push_back(zones::TrackMainRoadSegment{
+            segment_id,
+            offset_node.as<double>(),
+            parsePoints(
+                segment_node["center_waypoints"],
+                coordinate_type,
+                origin,
+                model_metric,
+                "lane.segments['" + segment_id + "'].center_waypoints for zone '" +
+                    zone_label + "'")
+        });
+    }
+
+    return segments;
 }
 
 std::vector<geometry::Point2d> MapParser::parsePoints(const YAML::Node& points_node, 

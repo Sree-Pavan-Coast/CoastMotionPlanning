@@ -1,7 +1,9 @@
 #pragma once
 
-#include <vector>
+#include <optional>
 #include <string>
+#include <vector>
+
 #include "coastmotionplanning/zones/zone.hpp"
 #include "coastmotionplanning/costs/costmap_types.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
@@ -9,33 +11,52 @@
 namespace coastmotionplanning {
 namespace zones {
 
+struct TrackMainRoadSegment {
+    std::string id;
+    double offset{0.0};
+    std::vector<geometry::Point2d> center_waypoints;
+};
+
 class TrackMainRoad : public Zone {
 public:
     TrackMainRoad() = default;
     ~TrackMainRoad() override = default;
 
     /// Construct with polygon only for staged construction. A valid track road
-    /// must later be populated with exactly two opposite-direction lanes.
+    /// must later be populated with centerline segments or a canonical
+    /// centerline and per-waypoint offsets.
     TrackMainRoad(const geometry::Polygon2d& polygon,
                   const std::optional<std::string>& name = std::nullopt);
 
-    /// Construct with polygon and lane point sequences.
-    /// Validates polygon geometry and requires exactly two opposite-direction
-    /// lanes whose waypoints all lie inside the polygon.
+    /// Construct with polygon and ordered authoring segments. Segment list order
+    /// defines travel order; gaps are stitched into one canonical centerline.
     TrackMainRoad(const geometry::Polygon2d& polygon,
-                  const std::vector<std::vector<geometry::Point2d>>& lane_point_sequences,
+                  const std::vector<TrackMainRoadSegment>& segments,
                   const std::optional<std::string>& name = std::nullopt);
 
+    /// Construct with polygon, ordered canonical centerline points, and
+    /// per-waypoint offsets. Retained for tests and internal callers.
+    TrackMainRoad(const geometry::Polygon2d& polygon,
+                  const std::vector<geometry::Point2d>& centerline_points,
+                  const std::vector<double>& offsets,
+                  const std::optional<std::string>& name = std::nullopt);
+
+    const std::vector<math::Pose2d>& getCenterline() const { return centerline_; }
+    const std::vector<double>& getOffsets() const { return offsets_; }
     const std::vector<std::vector<math::Pose2d>>& getLanes() const { return lanes_; }
 
-    /// Replace all lanes. Validates that there are exactly two lanes, each has
-    /// >= 2 waypoints inside the polygon, and the pair runs in opposite directions.
-    void setLanes(const std::vector<std::vector<math::Pose2d>>& lanes);
+    /// Replace the canonical track-road centerline. Validates centerline and
+    /// derived lane geometry before publishing the new representation.
+    void setCenterline(const std::vector<math::Pose2d>& centerline,
+                       const std::vector<double>& offsets);
 
-    /// Computes orientation between consecutive points and stores them as Pose2d.
-    /// Validates the lane has >= 2 points inside the polygon. Adding the second
-    /// lane validates the opposite-direction pair; adding a third lane throws.
-    void addLaneFromPoints(const std::vector<geometry::Point2d>& points);
+    /// Replace the track-road authoring segments. Segments are stitched into a
+    /// canonical centerline before validation and publication.
+    void setCenterlineSegments(const std::vector<TrackMainRoadSegment>& segments);
+
+    /// Computes heading along the centerline and stores it as Pose2d.
+    void setCenterlineFromPoints(const std::vector<geometry::Point2d>& points,
+                                 const std::vector<double>& offsets);
 
     std::string getDefaultPlannerBehavior() const override { return ""; }
 
@@ -56,10 +77,20 @@ public:
 
 private:
     static void validatePolygon(const geometry::Polygon2d& polygon);
-    void validateLanePoints(const std::vector<geometry::Point2d>& points) const;
-    void validateLaneWaypoints(const std::vector<math::Pose2d>& waypoints) const;
-    void validateLaneConfiguration(const std::vector<std::vector<math::Pose2d>>& lanes) const;
+    void validateCenterlinePoints(const std::vector<geometry::Point2d>& points,
+                                  const std::vector<double>& offsets) const;
+    void validateCenterlineWaypoints(const std::vector<math::Pose2d>& waypoints,
+                                     const std::vector<double>& offsets) const;
+    void validateCenterlineSegments(const std::vector<TrackMainRoadSegment>& segments) const;
+    std::vector<geometry::Point2d> buildOffsetPolyline(double side_sign) const;
+    std::vector<geometry::Point2d> buildOffsetPolyline(
+        const std::vector<math::Pose2d>& centerline,
+        const std::vector<double>& offsets,
+        double side_sign) const;
+    void rebuildDerivedLanes();
 
+    std::vector<math::Pose2d> centerline_;
+    std::vector<double> offsets_;
     std::vector<std::vector<math::Pose2d>> lanes_;
 };
 

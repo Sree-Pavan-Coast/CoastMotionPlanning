@@ -68,6 +68,16 @@ private:
                                               const std::string& zone_label);
 
     /**
+     * @brief Parses ordered TrackMainRoad authoring segments from the lane node.
+     */
+    static std::vector<zones::TrackMainRoadSegment> parseTrackMainRoadSegments(
+        const YAML::Node& lane_node,
+        CoordinateType coordinate_type,
+        const std::optional<CoordinateTransform::LLA>& origin,
+        double model_metric,
+        const std::string& zone_label);
+
+    /**
      * @brief Processes a list of points according to the zone's coordinate type.
      */
     static std::vector<geometry::Point2d> parsePoints(const YAML::Node& points_node, 

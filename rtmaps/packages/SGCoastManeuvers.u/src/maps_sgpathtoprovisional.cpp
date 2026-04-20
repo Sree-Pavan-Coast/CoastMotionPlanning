@@ -9,7 +9,7 @@ using namespace coastmotionplanning::geometry;
 
 MAPS_BEGIN_INPUTS_DEFINITION(MAPSSGPathToProvisional)
 MAPS_INPUT("iPath", MAPS::FilterFloat64, MAPS::LastOrNextReader)
-MAPS_INPUT("iZoneAreaId", MAPS::FilterInteger32, MAPS::SamplingReader)
+MAPS_INPUT("iZoneAreaId", MAPS::FilterInteger32, MAPS::LastOrNextReader)
 MAPS_END_INPUTS_DEFINITION
 
 MAPS_BEGIN_OUTPUTS_DEFINITION(MAPSSGPathToProvisional)
@@ -66,6 +66,7 @@ void MAPSSGPathToProvisional::Core()
             Rest(1000000);
             return;
         }
+        ReportInfo("Converting Coast Planner planned Path to Provisional Trajectory");
 
         // Parse the path and extract the coordinates
         std::vector<Point2d> path_coordinates;
@@ -80,7 +81,7 @@ void MAPSSGPathToProvisional::Core()
         MAPSIOElt *ioEltOut = StartWriting(Output("oProvisionalTrajectory"));
         
         // Fill zone/maneuver metadata
-        ioEltOut->Float64(0) = static_cast<double>(_ZoneAreaID);
+        ioEltOut->Float64(0) = static_cast<double>(_ZoneAreaID.load());
         ioEltOut->Float64(1) = 1.0;                                     // Speed
         ioEltOut->Float64(2) = GetFloatProperty("corridor_width");                                    // Corridor Width
         ioEltOut->Float64(3) = GetFloatProperty("minus_zone_station");                                // - Station
@@ -102,14 +103,12 @@ void MAPSSGPathToProvisional::Core()
     }else{
         Rest(2000000);
     }
-
-    Rest(1000000);
 }
 
 void MAPSSGPathToProvisional::Death()
 {
     _IsZoneAreaAvailable = false;
-    _ZoneAreaID = 0;
+    _ZoneAreaID.store(-1);
 }
 
 
@@ -121,11 +120,11 @@ void MAPSSGPathToProvisional::ZoneAreaIDReaderThread()
         while (DataAvailableInFIFO(input))
         {
             MAPSIOElt *iElt = StartReading(input);
-            if (iElt == nullptr)
-            {
+            if (iElt == nullptr){
                 break;
             }
-            _ZoneAreaID = static_cast<int>(iElt->Integer32(0));
+            auto prev_zone_id = _ZoneAreaID.exchange(static_cast<int>(iElt->Integer32(0)));
+            ReportInfo(MAPSStreamedString() << "Zone Area ID changed from [" << prev_zone_id << "] to [" << _ZoneAreaID.load() << "]");
             _IsZoneAreaAvailable = true;
         }
     }

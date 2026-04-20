@@ -5,13 +5,14 @@
 
 MAPS_BEGIN_INPUTS_DEFINITION(MAPSSGCoastPathPlanner)
 MAPS_INPUT("iPositionSpeed", MAPS::FilterFloat64, MAPS::SamplingReader)
-MAPS_INPUT("iDestinationForManeuvers", MAPS::FilterFloat64, MAPS::FifoReader)
+MAPS_INPUT("iDestinationForManeuvers", MAPS::FilterFloat64, MAPS::LastOrNextReader)
 MAPS_INPUT("iZoneArea", MAPS::FilterFloat64, MAPS::LastOrNextReader)
 MAPS_INPUT("iShapesDebug", MAPS::FilterFloat64, MAPS::LastOrNextReader)
 MAPS_END_INPUTS_DEFINITION
 
 MAPS_BEGIN_OUTPUTS_DEFINITION(MAPSSGCoastPathPlanner)
 MAPS_OUTPUT("oPath", MAPS::Float64, nullptr, nullptr, 10000)
+MAPS_OUTPUT("oZoneAreaID", MAPS::Integer32, nullptr, nullptr, 1)
 MAPS_END_OUTPUTS_DEFINITION
 
 MAPS_BEGIN_PROPERTIES_DEFINITION(MAPSSGCoastPathPlanner)
@@ -64,6 +65,7 @@ void MAPSSGCoastPathPlanner::Core()
     // Check if zone area is available.
     if (_IsZoneAreaAvailable)
     {
+        ReportInfo("Starting CoastPathPlanner");
         MAPSIOElt *input_elt = StartReading(Input("iDestinationForManeuvers"));
         if (input_elt == nullptr)
             return;
@@ -254,6 +256,11 @@ void MAPSSGCoastPathPlanner::ZoneAreaReaderThread()
             }
 
             ReportInfo(MAPSStreamedString() << "Zone area data for zone ID " << zone_area_id_received << " processed.");
+
+            MAPSIOElt *ioEltOut = StartWriting(Output("oZoneAreaID"));
+            ioEltOut->Integer32() = zone_area_id_received;
+            ioEltOut->Timestamp() = input_elt->Timestamp();
+            StopWriting(ioEltOut);
 
             if(_PrintDebugInfo){
                 std::string msg = "Zone area polygon : (";

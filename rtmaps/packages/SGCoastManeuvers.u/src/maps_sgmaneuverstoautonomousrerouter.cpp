@@ -7,9 +7,10 @@ using namespace coastmotionplanning::geometry;
 using namespace coastmotionplanning::math;
 
 MAPS_BEGIN_INPUTS_DEFINITION(MAPSSGManeuversToAutonomousRerouter)
-MAPS_INPUT("iProvisionalTrajectoryRunningStatus", MAPS::FilterInteger32, MAPS::LastOrNextReader)
-MAPS_INPUT("iTrajectoryToBeAlignedTo", MAPS::FilterFloat64, MAPS::LastOrNextReader)
+MAPS_INPUT("iProvisionalTrajMissionStatus", MAPS::FilterInteger32, MAPS::LastOrNextReader)
+MAPS_INPUT("iRefTrajForReRoute", MAPS::FilterFloat64, MAPS::LastOrNextReader)
 MAPS_INPUT("iPositionSpeed", MAPS::FilterFloat64, MAPS::LastOrNextReader)
+MAPS_INPUT("iReRouteStatus", MAPS::FilterInteger32, MAPS::LastOrNextReader)
 MAPS_END_INPUTS_DEFINITION
 
 MAPS_BEGIN_OUTPUTS_DEFINITION(MAPSSGManeuversToAutonomousRerouter)
@@ -35,84 +36,112 @@ MAPS_COMPONENT_DEFINITION(MAPSSGManeuversToAutonomousRerouter,
 
 void MAPSSGManeuversToAutonomousRerouter::Birth()
 {
+    _HeadingThreshold = Angle::from_degrees(GetFloatProperty("reroute_when_heading_threshold_deg"));
+    _DistThreshold = std::fabs(GetFloatProperty("reroute_when_distance_threshold_deg"));
+
+    CreateThread((MAPSThreadFunction)&MAPSSGManeuversToAutonomousRerouter::ProvisionalTrajMissionChecker);
+    CreateThread((MAPSThreadFunction)&MAPSSGManeuversToAutonomousRerouter::ReRouteMissionChecker);
 }
 
 void MAPSSGManeuversToAutonomousRerouter::Core()
 {
+    if(!_IsProvisionalTrajMissionActive){
+        _RefPathCoords.clear();
+        Rest(2000000); // 2sec
+    }else{
+        if(_RefPathCoords.empty()){
+            MAPSIOElt *input = StartReading(Input("iRefTrajForReRoute"));
+            if (input == nullptr) return;
+            int input_size = input->VectorSize();
+            for(int i = 0; i < input_size; i+=2){
+                _RefPathCoords.emplace_back(input->Float64(i), input->Float64(i+1));
+            }
+            ReportInfo("Starting Maneuver to Autonomous reRoute");
+        }
+        Rest(500000); // 200ms
 
-    MAPSInput &input = Input("iProvisionalTrajectoryRunningStatus");
-    MAPSIOElt *iElt = StartReading(input);
-    if (iElt == nullptr){
-        ReportWarning("Provisional Trajectory mission status not available");
-        Rest(1000000);
-        return;
+        // Get current vehicle position
+        MAPSIOElt *input_elt = StartReading(Input("iPositionSpeed"));
+        if (input_elt == nullptr) return;
+        if (input_elt->VectorSize() <= 3){
+            ReportError("Position speed input is too small. Expected x, y, speed, heading.");
+            return;
+        }
+        Pose2d current(input_elt->Float64(0), input_elt->Float64(1), Angle::from_radians(input_elt->Float64(3)));
+
+        // [TO DO] write logic to check the current pose against the reference path based on distance and if
+        // threshold is below then check for heading error between the reference path and the pose heading. We do nto worry about the path's direction for this check. 
+        // We just get the least angle difference(convert to positive) against the path. then we check if below heading threshold.
+
+        bool trigger_reroute = false;
+
+        // then trigger reroute
+        if(!_IsReRouteMissionSuccess){
+            if(trigger_reroute){
+                MAPSIOElt *ioEltOut = StartWriting(Output("oReroute"));
+                ioEltOut->Integer32() = 1;
+                ioEltOut->Timestamp() = input_elt->Timestamp();
+                StopWriting(ioEltOut);
+            }
+        }else{
+            _IsProvisionalTrajMissionActive.store(false);
+        }
     }
-
-    int status = iElt->Integer32();
-    if(status == 0){
-        Rest(1000000);
-        return;
-    }
-
-    MAPSIOElt *iElt_traj = StartReading(Input("iTrajectoryToBeAlignedTo"));
-    if (iElt_traj == nullptr){
-        ReportWarning("Reference trajectory not available");
-        Rest(1000000);
-        return;
-    }
-    const int traj_vector_size = iElt_traj->VectorSize();
-    if (traj_vector_size < 3){
-        ReportWarning("Reference trajectory size is less than 3. Skipping output.");
-        Rest(1000000);
-        return;
-    }
-
-    // build ref traj
-    std::vector<Point2d> ref_traj;
-    for(int i = 0; i < traj_vector_size; i+=2){
-        ref_traj.emplace_back(iElt_traj->Float64(i), iElt_traj->Float64(i+1));
-    }
-
-    bool is_reroute_success = false;
-    Angle heading_threshold = Angle::from_degrees(GetFloatProperty("reroute_when_heading_threshold_deg"));
-    heading_threshold.normalize();
-    double dist_threshold = std::fabs(GetFloatProperty("reroute_when_distance_threshold_deg"));
-
-    while(!is_reroute_success){
-        Rest(1000000);
-
-        MAPSIOElt *iElt_current_pos = StartReading(Input("iPositionSpeed"));
-        Pose2d current(iElt_current_pos->Float64(0), iElt_current_pos->Float64(1), Angle::from_radians(iElt_current_pos->Float64(3)));
-
-
-
-    }
-
-        // MAPSIOElt *ioEltOut = StartWriting(Output("oProvisionalTrajectory"));
-        
-        // // Fill zone/maneuver metadata
-        // ioEltOut->Float64(0) = static_cast<double>(_ZoneAreaID);
-        // ioEltOut->Float64(1) = 1.0;                                     // Speed
-        // ioEltOut->Float64(2) = GetFloatProperty("corridor_width");                                    // Corridor Width
-        // ioEltOut->Float64(3) = GetFloatProperty("minus_zone_station");                                // - Station
-        // ioEltOut->Float64(4) = GetFloatProperty("plus_zone_station");                                 // + Station
-        // ioEltOut->Float64(5) = 0.0; // Direction
-
-
-        // // Output the path coordinates
-        // long size = 6;
-        // for(auto coord : path_coordinates)
-        // {
-        //     ioEltOut->Float64(size++) = coord.x();
-        //     ioEltOut->Float64(size++) = coord.y();
-        // }
-        // ioEltOut->VectorSize() = size;
-        // ioEltOut->Timestamp() = iElt->Timestamp();
-        // StopWriting(ioEltOut);
-        // Rest(1000000);
-
+    Rest(1000000); // 1sec
 }
 
 void MAPSSGManeuversToAutonomousRerouter::Death()
 {
+}
+
+void MAPSSGManeuversToAutonomousRerouter::ProvisionalTrajMissionChecker()
+{
+    auto &input = Input("iProvisionalTrajMissionStatus");
+    while (!IsDying()){
+        if (DataAvailableInFIFO(input)){
+            MAPSIOElt *input_elt = StartReading(input);
+            if (input_elt == nullptr){
+                Rest(2000000);
+                continue;
+            }
+            int curr_prov_traj_mission_status = input_elt->Integer32();
+            if(curr_prov_traj_mission_status == 1){
+                if(!_IsProvisionalTrajMissionActive.load()){
+                    _IsProvisionalTrajMissionActive.store(true);
+                }
+            }else if(curr_prov_traj_mission_status == 0){
+                if(_IsProvisionalTrajMissionActive.load()){
+                    _IsProvisionalTrajMissionActive.store(false);
+                }
+            }
+        }
+        Rest(2000000);
+    }
+    Rest(500000);
+}
+
+void MAPSSGManeuversToAutonomousRerouter::ReRouteMissionChecker()
+{
+    auto &input = Input("iReRouteStatus");
+    while (!IsDying()){
+        if (DataAvailableInFIFO(input)){
+            MAPSIOElt *input_elt = StartReading(input);
+            if (input_elt == nullptr){
+                Rest(2000000);
+                continue;
+            }
+            int curr_reroute_mission_status = input_elt->Integer32();
+            if(curr_reroute_mission_status == 1){
+                if(!_IsReRouteMissionSuccess.load()){
+                    _IsReRouteMissionSuccess.store(true);
+                }
+            }else if(curr_reroute_mission_status == 0){
+                if(_IsReRouteMissionSuccess.load()){
+                    _IsReRouteMissionSuccess.store(false);
+                }
+            }
+        }
+        Rest(2000000);
+    }
+    Rest(500000);
 }

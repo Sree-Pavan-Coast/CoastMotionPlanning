@@ -22,6 +22,10 @@ add_rtmaps_package(${PCK} PCKINFO "${PCK}.pckinfo"
     #heading error calculator
     "src/maps_sgheadingerrorcalc.cpp"
     "include/maps_sgheadingerrorcalc.h"
+
+    # reroute
+    "src/maps_sgmaneuverstoautonomousrerouter.cpp"
+    "include/maps_sgmaneuverstoautonomousrerouter.h"
 )   
 
 target_include_directories(${PCK} PRIVATE

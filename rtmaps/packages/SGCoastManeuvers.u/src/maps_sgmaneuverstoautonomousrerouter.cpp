@@ -85,6 +85,7 @@ void MAPSSGManeuversToAutonomousRerouter::Core()
             }
         }else{
             _IsProvisionalTrajMissionActive.store(false);
+            _RefPathCoords.clear();
         }
     }
     Rest(1000000); // 1sec

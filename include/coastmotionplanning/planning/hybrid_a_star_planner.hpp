@@ -90,7 +90,6 @@ struct PlannerFrontierHandoffDebugSummary {
 
 struct HybridAStarPlannerDebugTrace {
     std::string initial_behavior_name;
-    std::string transition_behavior_name;
     std::string start_zone_name;
     std::string goal_zone_name;
     std::vector<std::string> selected_zone_names;
@@ -137,7 +136,6 @@ struct HybridAStarPlannerRequest {
     math::Pose2d goal;
     std::vector<geometry::Polygon2d> obstacle_polygons;
     std::string initial_behavior_name;
-    std::string transition_behavior_name;
     std::string dual_model_lut_path;
 };
 

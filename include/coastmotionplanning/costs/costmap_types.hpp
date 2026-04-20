@@ -34,15 +34,14 @@ namespace CostmapLayerNames {
 
 // =============================================================================
 // Zone constraint constants (written to the zone_constraints layer)
-// The zone_constraints layer stores zone indices (0-based) for cells inside
-// selected zones. Cells outside all zones use ZONE_NONE.
-// The planner reads this layer at runtime to map a node to its zone/profile
-// context without repeated polygon-within checks.
+// The zone_constraints layer stores frontier ownership indices for cells inside
+// selected zones. Cells outside all zones use ZONE_NONE. The planner reads this
+// layer at runtime to map a node to its zone/profile context without repeated
+// polygon-within checks.
 // =============================================================================
 
 struct ZoneConstraintValues {
     static constexpr float ZONE_NONE = 255.0f;       // Cell outside all operational zones (lethal)
-    static constexpr float ZONE_TRANSITION = 253.0f;  // Cell in search boundary gap between zones (passable)
 };
 
 // =============================================================================
@@ -57,9 +56,6 @@ struct CostmapConfig {
     double inflation_radius_m{0.3};             // outer inflation radius
     double inscribed_radius_m{1.0};             // robot inscribed radius (half-width)
     double cost_scaling_factor{3.0};            // exponential decay factor
-
-    // Zone preprocessing
-    double alpha_shape_alpha{0.0};              // 0 = auto (derived from resolution)
 
     // Lane centerline
     double max_lane_cost{100.0};                // maximum cost at lane boundary

@@ -66,15 +66,16 @@ std::shared_ptr<coastmotionplanning::zones::TrackMainRoad> makeTrackZone(
     double max_y,
     const std::string& behavior = "") {
     auto zone = std::make_shared<coastmotionplanning::zones::TrackMainRoad>(
-        makeRectangle(min_x, min_y, max_x, max_y), "track");
-    zone->addLaneFromPoints({
-        {min_x + 1.0, min_y + ((max_y - min_y) * 0.25)},
-        {max_x - 1.0, min_y + ((max_y - min_y) * 0.25)}
-    });
-    zone->addLaneFromPoints({
-        {max_x - 1.0, min_y + ((max_y - min_y) * 0.75)},
-        {min_x + 1.0, min_y + ((max_y - min_y) * 0.75)}
-    });
+        makeRectangle(min_x, min_y, max_x, max_y),
+        std::vector<coastmotionplanning::geometry::Point2d>{
+            {min_x + 1.0, min_y + ((max_y - min_y) * 0.5)},
+            {max_x - 1.0, min_y + ((max_y - min_y) * 0.5)}
+        },
+        std::vector<double>{
+            (max_y - min_y) * 0.25,
+            (max_y - min_y) * 0.25
+        },
+        "track");
     if (!behavior.empty()) {
         zone->setPlannerBehavior(behavior);
     }
@@ -118,16 +119,9 @@ coastmotionplanning::costs::ZoneSelectionResult buildSelection(
     const Pose2d& start,
     const Pose2d& goal,
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>>& zones,
-    const std::string& initial_behavior = "parking_profile",
-    const std::string& transition_behavior = "maneuver_to_track_profile") {
+    const std::string& initial_behavior = "parking_profile") {
     coastmotionplanning::costs::ZoneSelector selector;
-    return selector.select(
-        start,
-        goal,
-        zones,
-        0.0,
-        initial_behavior,
-        transition_behavior);
+    return selector.select(start, goal, zones, initial_behavior);
 }
 
 TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
@@ -147,8 +141,6 @@ TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
     EXPECT_EQ(primary.motion_primitives.num_angle_bins, 72);
     EXPECT_EQ(primary.collision_checker.collision_mode, "strict");
     EXPECT_TRUE(primary.isLayerActive("combined_cost"));
-    EXPECT_TRUE(behavior_set.contains("maneuver_to_track_profile"));
-
     EXPECT_EQ(parking.planner.max_planning_time_ms, 100);
     EXPECT_DOUBLE_EQ(parking.planner.xy_grid_resolution_m, 0.05);
     EXPECT_DOUBLE_EQ(parking.planner.yaw_grid_resolution_deg, 2.5);
@@ -220,24 +212,24 @@ TEST(PlannerBehaviorResolverTest, SwitchesZoneButKeepsCurrentBehaviorWhenSuccess
 
     EXPECT_TRUE(resolved.switched_zone);
     EXPECT_TRUE(resolved.switched_frontier);
-    EXPECT_EQ(resolved.frontier_id, 2u);
+    EXPECT_EQ(resolved.frontier_id, 1u);
     EXPECT_EQ(resolved.zone, other_zone);
     EXPECT_EQ(resolved.behavior_name, "parking_profile");
     ASSERT_NE(resolved.profile, nullptr);
     EXPECT_EQ(resolved.profile->motion_primitives.num_angle_bins, 144);
 }
 
-TEST(PlannerBehaviorResolverTest, SwitchesToTransitionFrontierBehaviorInGapSpace) {
+TEST(PlannerBehaviorResolverTest, OverlapCellsBelongToGoalFrontier) {
     const PlannerBehaviorSet behavior_set = loadBehaviorSet();
     const auto current_zone = makeManeuveringZone(0.0, 0.0, 10.0, 10.0);
-    const auto other_zone = makeTrackZone(12.0, 0.0, 22.0, 10.0);
+    const auto other_zone = makeTrackZone(8.0, 0.0, 18.0, 10.0, "track_main_road_profile");
     const std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
         current_zone, other_zone};
     const auto selection = buildSelection(makePose(5.0, 5.0), makePose(15.0, 5.0), zones);
     const grid_map::GridMap costmap = buildZoneConstraintCostmap(selection);
 
     const ResolvedPlannerBehavior resolved = PlannerBehaviorResolver::resolve(
-        makePose(11.0, 5.0),
+        makePose(9.0, 5.0),
         costmap,
         0,
         current_zone,
@@ -245,11 +237,11 @@ TEST(PlannerBehaviorResolverTest, SwitchesToTransitionFrontierBehaviorInGapSpace
         selection.frontiers,
         behavior_set);
 
-    EXPECT_FALSE(resolved.switched_zone);
+    EXPECT_TRUE(resolved.switched_zone);
     EXPECT_TRUE(resolved.switched_frontier);
     EXPECT_EQ(resolved.frontier_id, 1u);
-    EXPECT_EQ(resolved.zone, nullptr);
-    EXPECT_EQ(resolved.behavior_name, "maneuver_to_track_profile");
+    EXPECT_EQ(resolved.zone, other_zone);
+    EXPECT_EQ(resolved.behavior_name, "track_main_road_profile");
 }
 
 TEST(PlannerBehaviorResolverTest, ThrowsWhenResolvedZoneBehaviorIsMissingFromCatalog) {

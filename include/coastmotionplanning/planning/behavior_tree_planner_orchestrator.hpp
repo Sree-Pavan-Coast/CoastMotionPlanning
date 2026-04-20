@@ -24,7 +24,6 @@ struct PlanningRequestContext {
 
 struct PlanningAttempt {
     std::string profile;
-    std::string transition_profile;
     size_t attempt_index{0};
 };
 

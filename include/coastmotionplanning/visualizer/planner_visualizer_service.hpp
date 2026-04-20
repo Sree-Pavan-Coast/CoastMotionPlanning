@@ -10,6 +10,7 @@
 
 #include "coastmotionplanning/common/types.hpp"
 #include "coastmotionplanning/config/robots_parser.hpp"
+#include "coastmotionplanning/costs/zone_selector.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
 #include "coastmotionplanning/planning/behavior_tree_planner_orchestrator.hpp"
 #include "coastmotionplanning/planning/hybrid_a_star_planner.hpp"
@@ -87,7 +88,19 @@ struct MapLoadResponse {
     Bounds2d bounds;
     VehicleFootprintDto vehicle;
     std::vector<ZoneDto> zones;
-    std::vector<PointDto> search_boundary;  // Concave hull polygon of all zones
+    std::vector<PointDto> search_boundary;  // Reserved for compatibility; map load returns empty
+};
+
+struct SearchSpacePreviewRequest {
+    std::string map_id;
+    PoseDto start;
+    PoseDto goal;
+};
+
+struct SearchSpacePreviewResponse {
+    bool success{false};
+    std::string detail;
+    std::vector<PointDto> search_boundary;
 };
 
 struct PlanRequest {
@@ -120,6 +133,7 @@ public:
 
     RobotCatalogResponse listRobots() const;
     MapLoadResponse loadMap(const MapLoadRequest& request);
+    SearchSpacePreviewResponse previewSearchSpace(const SearchSpacePreviewRequest& request);
     PlanResponse plan(const PlanRequest& request);
 
     static math::Pose2d makePose(const PoseDto& pose_input, const std::string& label);
@@ -129,6 +143,7 @@ private:
     struct LoadedMapState {
         MapLoadResponse response;
         std::vector<std::shared_ptr<zones::Zone>> zones;
+        costs::ZoneConnectivityIndex connectivity;
     };
 
     static std::string extractMapName(const std::string& yaml_content,

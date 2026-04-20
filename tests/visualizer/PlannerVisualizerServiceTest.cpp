@@ -20,6 +20,7 @@ using coastmotionplanning::visualizer::PlanRequest;
 using coastmotionplanning::visualizer::PlannerVisualizerService;
 using coastmotionplanning::visualizer::PlannerVisualizerServiceConfig;
 using coastmotionplanning::visualizer::PoseDto;
+using coastmotionplanning::visualizer::SearchSpacePreviewRequest;
 
 std::string configsRoot() {
     return std::string(COAST_REPO_ROOT) + "/configs";
@@ -63,6 +64,58 @@ zones:
       - [6.0, 0.0]
       - [6.0, 6.0]
       - [0.0, 6.0]
+)";
+}
+
+std::string connectedZonesMapYaml() {
+    return R"(
+maps:
+  name: "Visualizer Connected Zones Map"
+zones:
+  - name: "start_zone"
+    type: "ManeuveringZone"
+    planner_behavior: "parking_profile"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, 0.0]
+      - [6.0, 0.0]
+      - [6.0, 6.0]
+      - [0.0, 6.0]
+  - name: "goal_zone"
+    type: "ManeuveringZone"
+    planner_behavior: "primary_profile"
+    coordinate_type: "world"
+    polygon:
+      - [6.0, 1.0]
+      - [12.0, 1.0]
+      - [12.0, 5.0]
+      - [6.0, 5.0]
+)";
+}
+
+std::string disconnectedZonesMapYaml() {
+    return R"(
+maps:
+  name: "Visualizer Disconnected Zones Map"
+zones:
+  - name: "start_zone"
+    type: "ManeuveringZone"
+    planner_behavior: "parking_profile"
+    coordinate_type: "world"
+    polygon:
+      - [0.0, 0.0]
+      - [6.0, 0.0]
+      - [6.0, 6.0]
+      - [0.0, 6.0]
+  - name: "goal_zone"
+    type: "ManeuveringZone"
+    planner_behavior: "primary_profile"
+    coordinate_type: "world"
+    polygon:
+      - [10.0, 0.0]
+      - [16.0, 0.0]
+      - [16.0, 6.0]
+      - [10.0, 6.0]
 )";
 }
 
@@ -224,10 +277,66 @@ TEST(PlannerVisualizerServiceTest, LoadMapBuildsGeometryAndBounds) {
     EXPECT_GT(response.vehicle.total_length_m, response.vehicle.wheelbase_m);
     EXPECT_GT(response.vehicle.min_turning_radius_m, 0.0);
     EXPECT_GT(response.vehicle.max_steer_angle_rad, 0.0);
+    EXPECT_TRUE(response.search_boundary.empty());
     ASSERT_EQ(response.zones.size(), 1u);
     EXPECT_EQ(response.zones[0].type, "TrackMainRoad");
     ASSERT_EQ(response.zones[0].lanes.size(), 2u);
     ASSERT_EQ(response.zones[0].lanes[0].poses.size(), 2u);
+}
+
+TEST(PlannerVisualizerServiceTest, PreviewSearchSpaceReturnsBoundaryForSameZoneRequest) {
+    auto service = makeService();
+    const auto load_response = service.loadMap(MapLoadRequest{
+        "maneuvering_map.yaml",
+        maneuveringMapYaml(),
+        ""
+    });
+
+    const auto preview = service.previewSearchSpace(SearchSpacePreviewRequest{
+        load_response.map_id,
+        PoseDto{1.0, 1.0, 0.0},
+        PoseDto{5.0, 5.0, 0.0}
+    });
+
+    EXPECT_TRUE(preview.success);
+    EXPECT_FALSE(preview.search_boundary.empty());
+}
+
+TEST(PlannerVisualizerServiceTest, PreviewSearchSpaceReturnsBoundaryForDirectlyConnectedZones) {
+    auto service = makeService();
+    const auto load_response = service.loadMap(MapLoadRequest{
+        "connected_zones.yaml",
+        connectedZonesMapYaml(),
+        ""
+    });
+
+    const auto preview = service.previewSearchSpace(SearchSpacePreviewRequest{
+        load_response.map_id,
+        PoseDto{2.0, 2.0, 0.0},
+        PoseDto{10.0, 3.0, 0.0}
+    });
+
+    EXPECT_TRUE(preview.success);
+    EXPECT_FALSE(preview.search_boundary.empty());
+}
+
+TEST(PlannerVisualizerServiceTest, PreviewSearchSpaceReportsFailureForDisconnectedZones) {
+    auto service = makeService();
+    const auto load_response = service.loadMap(MapLoadRequest{
+        "disconnected_zones.yaml",
+        disconnectedZonesMapYaml(),
+        ""
+    });
+
+    const auto preview = service.previewSearchSpace(SearchSpacePreviewRequest{
+        load_response.map_id,
+        PoseDto{2.0, 2.0, 0.0},
+        PoseDto{12.0, 3.0, 0.0}
+    });
+
+    EXPECT_FALSE(preview.success);
+    EXPECT_TRUE(preview.search_boundary.empty());
+    EXPECT_NE(preview.detail.find("do not share an edge or overlap"), std::string::npos);
 }
 
 TEST(PlannerVisualizerServiceTest, ListsRobotsFromRobotCatalogAndFlagsUnsupportedEntries) {

@@ -44,7 +44,6 @@ schema:
     inflation_radius_m: 0.3
     inscribed_radius_m: 1.0
     cost_scaling_factor: 3.0
-    alpha_shape_alpha: 0.0
     max_lane_cost: 100.0
     max_lane_half_width_m: 5.0
   collision_checker:
@@ -91,7 +90,6 @@ behaviors:
       inflation_radius_m: 0.3
       inscribed_radius_m: 1.0
       cost_scaling_factor: 3.0
-      alpha_shape_alpha: 0.0
       max_lane_cost: 100.0
       max_lane_half_width_m: 5.0
     collision_checker:
@@ -141,7 +139,6 @@ behaviors:
       inflation_radius_m: 0.0
       inscribed_radius_m: 1.0
       cost_scaling_factor: 3.0
-      alpha_shape_alpha: 0.0
       max_lane_cost: 100.0
       max_lane_half_width_m: 5.0
     collision_checker:
@@ -189,7 +186,6 @@ behaviors:
       inflation_radius_m: 0.0
       inscribed_radius_m: 1.0
       cost_scaling_factor: 3.0
-      alpha_shape_alpha: 0.0
       max_lane_cost: 100.0
       max_lane_half_width_m: 5.0
     collision_checker:
@@ -238,7 +234,6 @@ behaviors:
       inflation_radius_m: 0.3
       inscribed_radius_m: 1.0
       cost_scaling_factor: 3.0
-      alpha_shape_alpha: 0.0
       max_lane_cost: 100.0
       max_lane_half_width_m: 5.0
     collision_checker:
@@ -287,7 +282,6 @@ behaviors:
       inflation_radius_m: 0.3
       inscribed_radius_m: 1.0
       cost_scaling_factor: 3.0
-      alpha_shape_alpha: 0.0
       max_lane_cost: 100.0
       max_lane_half_width_m: 5.0
     collision_checker:
@@ -337,7 +331,6 @@ behaviors:
       inflation_radius_m: 0.3
       inscribed_radius_m: 1.0
       cost_scaling_factor: 3.0
-      alpha_shape_alpha: 0.0
       max_lane_cost: 100.0
       max_lane_half_width_m: 5.0
     collision_checker:
@@ -386,7 +379,6 @@ behaviors:
       inflation_radius_m: 0.3
       inscribed_radius_m: 1.0
       cost_scaling_factor: 3.0
-      alpha_shape_alpha: 0.0
       max_lane_cost: 100.0
       max_lane_half_width_m: 5.0
     collision_checker:

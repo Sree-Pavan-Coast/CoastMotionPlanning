@@ -9,7 +9,6 @@ costs::CostmapConfig PlannerBehaviorCostmapConfig::toCostmapConfig() const {
     config.inflation_radius_m = inflation_radius_m;
     config.inscribed_radius_m = inscribed_radius_m;
     config.cost_scaling_factor = cost_scaling_factor;
-    config.alpha_shape_alpha = alpha_shape_alpha;
     config.max_lane_cost = max_lane_cost;
     config.max_lane_half_width = max_lane_half_width_m;
     return config;

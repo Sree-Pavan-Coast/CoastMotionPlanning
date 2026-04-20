@@ -83,6 +83,23 @@ TEST(PlannerVisualizerServerTest, MapLoadAndPlanEndpointsWorkEndToEnd) {
     EXPECT_EQ(load_body.at("vehicle").at("name").get<std::string>(), "E_Transit");
     EXPECT_GT(load_body.at("vehicle").at("width_m").get<double>(), 0.0);
     EXPECT_GT(load_body.at("vehicle").at("max_steer_angle_rad").get<double>(), 0.0);
+    ASSERT_TRUE(load_body.contains("search_boundary"));
+    EXPECT_TRUE(load_body.at("search_boundary").empty());
+
+    const auto preview_response = client.Post(
+        "/api/search-space/preview",
+        json{
+            {"map_id", load_body.at("map_id").get<std::string>()},
+            {"start", {{"x", 2.0}, {"y", -1.5}, {"heading_deg", 0.0}}},
+            {"goal", {{"x", 6.5}, {"y", -1.5}, {"heading_deg", 0.0}}}
+        }.dump(),
+        "application/json");
+
+    ASSERT_TRUE(preview_response);
+    ASSERT_EQ(preview_response->status, 200);
+    const auto preview_body = json::parse(preview_response->body);
+    EXPECT_TRUE(preview_body.at("success").get<bool>());
+    EXPECT_FALSE(preview_body.at("search_boundary").empty());
 
     const auto plan_response = client.Post(
         "/api/plan",
@@ -132,6 +149,17 @@ TEST(PlannerVisualizerServerTest, InvalidRequestsReturnHttp400) {
 
     ASSERT_TRUE(missing_map_id_response);
     EXPECT_EQ(missing_map_id_response->status, 400);
+
+    const auto bad_preview_response = client.Post(
+        "/api/search-space/preview",
+        json{
+            {"start", {{"x", 0.0}, {"y", 0.0}, {"heading_deg", 0.0}}},
+            {"goal", {{"x", 1.0}, {"y", 0.0}, {"heading_deg", 0.0}}}
+        }.dump(),
+        "application/json");
+
+    ASSERT_TRUE(bad_preview_response);
+    EXPECT_EQ(bad_preview_response->status, 400);
 }
 
 } // namespace

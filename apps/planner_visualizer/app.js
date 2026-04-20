@@ -82,6 +82,14 @@ function createDefaultPoses() {
   };
 }
 
+function createEmptySearchSpacePreview() {
+  return {
+    success: false,
+    detail: "",
+    search_boundary: [],
+  };
+}
+
 function formatDraftValue(key, value) {
   if (value == null) {
     return key === "heading_deg" ? "0" : "";
@@ -112,11 +120,15 @@ const state = {
   poses: createDefaultPoses(),
   poseDrafts: createPoseDraftsFromPoses(createDefaultPoses()),
   plan: null,
+  searchSpacePreview: createEmptySearchSpacePreview(),
   viewBox: { x: -10, y: -10, width: 20, height: 20 },
   baseViewBox: { x: -10, y: -10, width: 20, height: 20 },
   cursorWorld: null,
   pointer: null,
 };
+
+let searchSpacePreviewTimer = null;
+let searchSpacePreviewRequestId = 0;
 
 function setStatus(kind, message) {
   refs.statusBadge.className = `status-badge ${kind}`;
@@ -241,6 +253,19 @@ function clearPlan(reason) {
   }
 }
 
+function resetSearchSpacePreview() {
+  state.searchSpacePreview = createEmptySearchSpacePreview();
+}
+
+function clearSearchSpacePreview() {
+  if (searchSpacePreviewTimer) {
+    clearTimeout(searchSpacePreviewTimer);
+    searchSpacePreviewTimer = null;
+  }
+  searchSpacePreviewRequestId += 1;
+  resetSearchSpacePreview();
+}
+
 function roundTo(value, digits = 2) {
   return Number.parseFloat(value.toFixed(digits));
 }
@@ -314,24 +339,28 @@ function updatePoseField(poseName, key, rawValue) {
   if (rawValue === "") {
     state.poses[poseName][key] = key === "heading_deg" ? 0 : null;
     clearPlan("Scenario changed. Click Plan Path to recompute.");
+    scheduleSearchSpacePreview();
     render();
     return;
   }
 
   if (isIntermediateNumericInput(rawValue)) {
     clearPlan("Scenario changed. Click Plan Path to recompute.");
+    scheduleSearchSpacePreview();
     render();
     return;
   }
 
   const numericValue = Number(rawValue);
   if (!Number.isFinite(numericValue)) {
+    clearSearchSpacePreview();
     render();
     return;
   }
 
   state.poses[poseName][key] = numericValue;
   clearPlan("Scenario changed. Click Plan Path to recompute.");
+  scheduleSearchSpacePreview();
   render();
 }
 
@@ -425,12 +454,90 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function tryBuildPreviewPose(poseName) {
+  try {
+    return {
+      x: parsePoseDraftValue(poseName, "x"),
+      y: parsePoseDraftValue(poseName, "y"),
+      heading_deg: parsePoseDraftValue(poseName, "heading_deg"),
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+function buildSearchSpacePreviewRequest() {
+  if (!state.map) {
+    return null;
+  }
+
+  const start = tryBuildPreviewPose("start");
+  const goal = tryBuildPreviewPose("goal");
+  if (!start || !goal) {
+    return null;
+  }
+
+  return {
+    map_id: state.map.map_id,
+    start,
+    goal,
+  };
+}
+
+function scheduleSearchSpacePreview() {
+  const request = buildSearchSpacePreviewRequest();
+  if (!request) {
+    clearSearchSpacePreview();
+    return;
+  }
+
+  if (searchSpacePreviewTimer) {
+    clearTimeout(searchSpacePreviewTimer);
+  }
+
+  const requestId = ++searchSpacePreviewRequestId;
+  searchSpacePreviewTimer = window.setTimeout(async () => {
+    searchSpacePreviewTimer = null;
+    try {
+      const response = await fetch("/api/search-space/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      const body = await response.json();
+      if (requestId !== searchSpacePreviewRequestId || request.map_id !== state.map?.map_id) {
+        return;
+      }
+      if (!response.ok || !body.success) {
+        resetSearchSpacePreview();
+        render();
+        return;
+      }
+
+      state.searchSpacePreview = {
+        success: true,
+        detail: body.detail || "",
+        search_boundary: body.search_boundary || [],
+      };
+      render();
+    } catch (error) {
+      if (requestId !== searchSpacePreviewRequestId) {
+        return;
+      }
+      resetSearchSpacePreview();
+      render();
+    }
+  }, 180);
+}
+
 function renderSearchSpace() {
-  if (!state.map?.search_boundary?.length || !refs.toggles.searchSpace.checked) {
+  if (!state.searchSpacePreview.search_boundary.length || !refs.toggles.searchSpace.checked) {
     return "";
   }
 
-  const points = state.map.search_boundary.map((point) => `${point.x},${-point.y}`).join(" ");
+  const points = state.searchSpacePreview.search_boundary
+    .map((point) => `${point.x},${-point.y}`)
+    .join(" ");
   return `
     <g class="search-space-layer">
       <polygon points="${points}" fill="${colors.searchSpaceFill}" stroke="${colors.searchSpaceStroke}"
@@ -612,6 +719,7 @@ function clearScenarioForNewMap() {
   state.poses = createDefaultPoses();
   state.poseDrafts = createPoseDraftsFromPoses(state.poses);
   state.cursorWorld = null;
+  clearSearchSpacePreview();
 }
 
 function syncSelectedRobotToMap() {
@@ -701,6 +809,7 @@ async function loadSelectedMap(file) {
     render();
   } catch (error) {
     state.map = null;
+    clearSearchSpacePreview();
     setStatus("error", error.message);
     render();
   }
@@ -913,6 +1022,7 @@ svg.addEventListener("pointerup", (event) => {
   syncPoseDraft(state.activeTool, "x");
   syncPoseDraft(state.activeTool, "y");
   clearPlan("Scenario changed. Click Plan Path to recompute.");
+  scheduleSearchSpacePreview();
   render();
 });
 

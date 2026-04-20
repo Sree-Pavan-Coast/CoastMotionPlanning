@@ -82,7 +82,6 @@ json profileToJson(const planning::PlannerBehaviorProfile& profile) {
             {"inflation_radius_m", profile.costmap.inflation_radius_m},
             {"inscribed_radius_m", profile.costmap.inscribed_radius_m},
             {"cost_scaling_factor", profile.costmap.cost_scaling_factor},
-            {"alpha_shape_alpha", profile.costmap.alpha_shape_alpha},
             {"max_lane_cost", profile.costmap.max_lane_cost},
             {"max_lane_half_width_m", profile.costmap.max_lane_half_width_m}
         }},
@@ -188,7 +187,6 @@ json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace
 
     return json{
         {"initial_behavior_name", trace.initial_behavior_name},
-        {"transition_behavior_name", trace.transition_behavior_name},
         {"start_zone_name", trace.start_zone_name},
         {"goal_zone_name", trace.goal_zone_name},
         {"selected_zone_names", trace.selected_zone_names},
@@ -293,6 +291,21 @@ VehicleFootprintDto makeVehicleFootprintDto(const config::CarDefinition& car_def
     };
 }
 
+std::vector<PointDto> polygonToPointDtos(const geometry::Polygon2d& polygon) {
+    std::vector<PointDto> points;
+    const auto& ring = polygon.outer();
+    points.reserve(ring.size());
+    for (size_t i = 0; i < ring.size(); ++i) {
+        if (i == ring.size() - 1 && ring.size() > 1 &&
+            std::abs(ring[i].x() - ring[0].x()) < 1e-9 &&
+            std::abs(ring[i].y() - ring[0].y()) < 1e-9) {
+            continue;
+        }
+        points.push_back(PointDto{ring[i].x(), ring[i].y()});
+    }
+    return points;
+}
+
 RobotCatalogData loadRobotCatalog(const PlannerVisualizerServiceConfig& config) {
     const auto robots_path = requireConfigPath(config.configs_root, "robots.yaml");
     const auto robot_definitions = config::RobotsParser::parse(robots_path.string());
@@ -390,6 +403,7 @@ MapLoadResponse PlannerVisualizerService::loadMap(const MapLoadRequest& request)
 
     auto loaded_map = std::make_shared<LoadedMapState>();
     loaded_map->zones = zones;
+    loaded_map->connectivity = costs::ZoneSelector::buildConnectivityIndex(zones);
     loaded_map->response.map_id = nextMapId();
     loaded_map->response.filename = request.filename;
     loaded_map->response.map_name = extractMapName(request.yaml, request.filename);
@@ -401,31 +415,36 @@ MapLoadResponse PlannerVisualizerService::loadMap(const MapLoadRequest& request)
         loaded_map->response.zones.push_back(buildZoneDto(zone));
     }
 
-    // Compute the concave hull (search space boundary) over all zone polygons
-    {
-        std::vector<geometry::Polygon2d> zone_polygons;
-        zone_polygons.reserve(zones.size());
-        for (const auto& zone : zones) {
-            zone_polygons.push_back(zone->getPolygon());
-        }
-        const auto hull = costs::ZoneSelector::computeConcaveHull(zone_polygons, 0.0);
-        const auto& ring = hull.outer();
-        loaded_map->response.search_boundary.reserve(ring.size());
-        for (size_t i = 0; i < ring.size(); ++i) {
-            // Skip the Boost.Geometry closing vertex (duplicate of first point)
-            if (i == ring.size() - 1 && ring.size() > 1 &&
-                std::abs(ring[i].x() - ring[0].x()) < 1e-9 &&
-                std::abs(ring[i].y() - ring[0].y()) < 1e-9) {
-                continue;
-            }
-            loaded_map->response.search_boundary.push_back(
-                PointDto{ring[i].x(), ring[i].y()});
-        }
-    }
-
     std::lock_guard<std::mutex> lock(maps_mutex_);
     maps_[loaded_map->response.map_id] = loaded_map;
     return loaded_map->response;
+}
+
+SearchSpacePreviewResponse PlannerVisualizerService::previewSearchSpace(
+    const SearchSpacePreviewRequest& request) {
+    if (request.map_id.empty()) {
+        throw std::runtime_error("Search-space preview request is missing map_id.");
+    }
+
+    const auto loaded_map = requireMap(request.map_id);
+    const auto start_pose = makePose(request.start, "start");
+    const auto goal_pose = makePose(request.goal, "goal");
+
+    SearchSpacePreviewResponse response;
+    try {
+        costs::ZoneSelector selector;
+        const auto selection = selector.select(
+            start_pose,
+            goal_pose,
+            loaded_map->zones);
+        response.success = true;
+        response.detail = "Search space resolved.";
+        response.search_boundary = polygonToPointDtos(selection.search_boundary);
+    } catch (const std::exception& e) {
+        response.success = false;
+        response.detail = e.what();
+    }
+    return response;
 }
 
 PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
@@ -470,7 +489,6 @@ PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
         planner_request.start = start_pose;
         planner_request.goal = goal_pose;
         planner_request.initial_behavior_name = attempt.profile;
-        planner_request.transition_behavior_name = attempt.transition_profile;
 
         last_planner_result = planner.plan(planner_request);
         attempt_records.push_back(AttemptRecord{attempt, last_planner_result});
@@ -546,7 +564,6 @@ PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
                 json attempt_json{
                     {"attempt_index", record.attempt.attempt_index},
                     {"profile", record.attempt.profile},
-                    {"transition_profile", record.attempt.transition_profile},
                     {"result", {
                         {"success", record.result.success},
                         {"detail", record.result.detail},

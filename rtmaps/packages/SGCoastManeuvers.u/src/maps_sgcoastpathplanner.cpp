@@ -354,7 +354,6 @@ HybridAStarPlannerResult MAPSSGCoastPathPlanner::PlanPath(const Pose2d& start)
     request.start = start;
     request.goal = _DestinationForManeuvers.goal_pose;
     request.initial_behavior_name = GetStringProperty("planner_behavior_profile");
-    request.transition_behavior_name.clear();
     request.dual_model_lut_path.clear();
     std::vector<Polygon2d> complete_local_obstacles = _ZoneArea.static_obstacles;
     complete_local_obstacles.insert(complete_local_obstacles.end(), _DynamicObstacles.begin(), _DynamicObstacles.end());

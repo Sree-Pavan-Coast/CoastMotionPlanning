@@ -42,15 +42,13 @@ std::shared_ptr<coastmotionplanning::zones::ManeuveringZone> makeManeuveringZone
 std::shared_ptr<coastmotionplanning::zones::TrackMainRoad> makeTrackZone(
     const std::string& behavior = "") {
     auto zone = std::make_shared<coastmotionplanning::zones::TrackMainRoad>(
-        makeSquarePolygon(), "track");
-    zone->addLaneFromPoints({
-        {1.0, 2.5},
-        {9.0, 2.5}
-    });
-    zone->addLaneFromPoints({
-        {9.0, 7.5},
-        {1.0, 7.5}
-    });
+        makeSquarePolygon(),
+        std::vector<coastmotionplanning::geometry::Point2d>{
+            {1.0, 5.0},
+            {9.0, 5.0}
+        },
+        std::vector<double>{2.5, 2.5},
+        "track");
     if (!behavior.empty()) {
         zone->setPlannerBehavior(behavior);
     }
@@ -73,7 +71,6 @@ TEST(PlannerBehaviorSetTest, LoadsNamedBehaviorsFromConfig) {
 
     EXPECT_TRUE(behavior_set.contains("primary_profile"));
     EXPECT_TRUE(behavior_set.contains("relaxed_profile"));
-    EXPECT_TRUE(behavior_set.contains("maneuver_to_track_profile"));
     EXPECT_TRUE(behavior_set.contains("parking_profile"));
     EXPECT_FALSE(behavior_set.contains("missing_profile"));
 }
@@ -154,7 +151,7 @@ TEST(BehaviorTreePlannerTest, StartZoneHintIsUsedWhenGoalHintIsMissing) {
     EXPECT_EQ(result.attempted_profiles[0], "parking_profile");
 }
 
-TEST(BehaviorTreePlannerTest, CrossZoneTrackRequestsInjectTransitionProfile) {
+TEST(BehaviorTreePlannerTest, CrossZoneTrackRequestsUseResolvedPrimaryProfile) {
     auto orchestrator = makeOrchestrator();
 
     PlanningRequestContext request;
@@ -166,7 +163,7 @@ TEST(BehaviorTreePlannerTest, CrossZoneTrackRequestsInjectTransitionProfile) {
         request,
         [](const PlanningAttempt& attempt) {
             EXPECT_EQ(attempt.profile, "primary_profile");
-            EXPECT_EQ(attempt.transition_profile, "maneuver_to_track_profile");
+            EXPECT_EQ(attempt.attempt_index, 0u);
             return PlannerRunResult{true, "planned"};
         });
 

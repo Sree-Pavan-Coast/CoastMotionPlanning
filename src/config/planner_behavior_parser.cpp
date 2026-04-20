@@ -239,7 +239,6 @@ planning::PlannerBehaviorProfile PlannerBehaviorParser::parseProfile(
     profile.costmap.inflation_radius_m = costmap["inflation_radius_m"].as<double>();
     profile.costmap.inscribed_radius_m = costmap["inscribed_radius_m"].as<double>();
     profile.costmap.cost_scaling_factor = costmap["cost_scaling_factor"].as<double>();
-    profile.costmap.alpha_shape_alpha = costmap["alpha_shape_alpha"].as<double>();
     profile.costmap.max_lane_cost = costmap["max_lane_cost"].as<double>();
     profile.costmap.max_lane_half_width_m = costmap["max_lane_half_width_m"].as<double>();
 

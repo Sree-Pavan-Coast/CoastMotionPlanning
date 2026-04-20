@@ -41,7 +41,6 @@ struct PlannerBehaviorCostmapConfig {
     double inflation_radius_m{0.0};
     double inscribed_radius_m{0.0};
     double cost_scaling_factor{0.0};
-    double alpha_shape_alpha{0.0};
     double max_lane_cost{0.0};
     double max_lane_half_width_m{0.0};
 

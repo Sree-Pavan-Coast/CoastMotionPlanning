@@ -376,7 +376,7 @@ TEST(HybridAStarPlannerTest, SameZoneCarPlanningSucceeds) {
     EXPECT_EQ(result.segment_directions.size(), result.poses.size() - 1);
 }
 
-TEST(HybridAStarPlannerTest, CrossZonePlanningCanExhaustFrontierUnderTightBoundary) {
+TEST(HybridAStarPlannerTest, DisconnectedCrossZonePlanningFailsBeforeSearch) {
     auto behavior_set = loadBehaviorSetWithoutAnalyticExpansion(
         {"relaxed_profile", "primary_profile", "parking_profile"});
     behavior_set.setMinimumPlanningTimeMs(1500);
@@ -391,12 +391,12 @@ TEST(HybridAStarPlannerTest, CrossZonePlanningCanExhaustFrontierUnderTightBounda
     request.start = makePose(2.0, 0.0);
     request.goal = makePose(17.0, 0.0);
     request.initial_behavior_name = "relaxed_profile";
-    request.transition_behavior_name = "primary_profile";
 
     const auto result = planner.plan(request);
 
     EXPECT_FALSE(result.success);
-    EXPECT_NE(result.detail.find("exhausted the frontier"), std::string::npos) << result.detail;
+    EXPECT_NE(result.detail.find("do not share an edge or overlap"), std::string::npos)
+        << result.detail;
 }
 
 TEST(HybridAStarPlannerTest, MissingInitialBehaviorFailsFast) {

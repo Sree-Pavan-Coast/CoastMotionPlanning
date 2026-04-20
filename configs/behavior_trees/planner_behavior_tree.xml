@@ -21,7 +21,6 @@
   <BehaviorTree ID="PlannerBehaviorTree">
     <Sequence name="plan_request">
       <SubTree ID="ResolvePreferredProfile" />
-      <ResolveTransitionProfile />
       <Fallback name="plan_with_relaxed_retry">
         <RunPlanningAttempt profile="{preferred_profile}" />
         <Sequence name="retry_relaxed">

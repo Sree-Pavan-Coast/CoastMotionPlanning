@@ -119,6 +119,19 @@ json mapLoadResponseToJson(const MapLoadResponse& response) {
     };
 }
 
+json searchSpacePreviewResponseToJson(const SearchSpacePreviewResponse& response) {
+    json search_boundary = json::array();
+    for (const auto& point : response.search_boundary) {
+        search_boundary.push_back(json{{"x", point.x}, {"y", point.y}});
+    }
+
+    return json{
+        {"success", response.success},
+        {"detail", response.detail},
+        {"search_boundary", search_boundary}
+    };
+}
+
 json planResponseToJson(const PlanResponse& response) {
     json path = json::array();
     for (const auto& pose : response.path) {
@@ -295,6 +308,24 @@ void PlannerVisualizerServer::registerRoutes() {
                 poseFromJson(body, "goal")
             });
             response.set_content(planResponseToJson(result).dump(), "application/json");
+        } catch (const std::exception& e) {
+            response.status = 400;
+            response.set_content(makeErrorJson(e.what()).dump(), "application/json");
+        }
+    });
+
+    server_->Post("/api/search-space/preview", [this](const httplib::Request& request,
+                                                      httplib::Response& response) {
+        try {
+            const auto body = json::parse(request.body);
+            const auto result = service_->previewSearchSpace(SearchSpacePreviewRequest{
+                body.value("map_id", std::string{}),
+                poseFromJson(body, "start"),
+                poseFromJson(body, "goal")
+            });
+            response.set_content(
+                searchSpacePreviewResponseToJson(result).dump(),
+                "application/json");
         } catch (const std::exception& e) {
             response.status = 400;
             response.set_content(makeErrorJson(e.what()).dump(), "application/json");

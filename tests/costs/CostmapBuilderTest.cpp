@@ -34,15 +34,14 @@ protected:
             geometry::Point2d(100, 5), geometry::Point2d(15, 5),
             geometry::Point2d(15, 0)
         };
-        auto track = std::make_shared<zones::TrackMainRoad>(poly_b, "zone_b");
-        std::vector<geometry::Point2d> lane_a = {
-            geometry::Point2d(20, 1.5), geometry::Point2d(40, 1.5)
-        };
-        std::vector<geometry::Point2d> lane_b = {
-            geometry::Point2d(40, 3.5), geometry::Point2d(20, 3.5)
-        };
-        track->addLaneFromPoints(lane_a);
-        track->addLaneFromPoints(lane_b);
+        auto track = std::make_shared<zones::TrackMainRoad>(
+            poly_b,
+            std::vector<geometry::Point2d>{
+                geometry::Point2d(20, 2.5),
+                geometry::Point2d(40, 2.5)
+            },
+            std::vector<double>{1.0, 1.0},
+            "zone_b");
         all_zones.push_back(track);
 
         car = std::make_unique<robot::Car>(2.0, 3.0, 0.5, 0.5);
@@ -130,10 +129,10 @@ TEST_F(CostmapBuilderTest, ZoneConstraintsCorrect) {
     // Point in track road zone (zone index 1 — second selected zone)
     grid_map::Position track_pos(50.0, 2.5);
     zc = costmap.atPosition(costs::CostmapLayerNames::ZONE_CONSTRAINTS, track_pos);
-    EXPECT_FLOAT_EQ(zc, 2.0f);  // zone_b is the goal frontier when a transition frontier exists
+    EXPECT_FLOAT_EQ(zc, 1.0f);  // zone_b is the goal frontier
 }
 
-TEST_F(CostmapBuilderTest, GapBetweenZonesBecomesDrivableTransitionSpace) {
+TEST_F(CostmapBuilderTest, DisconnectedZonesFailBeforeCostmapBuild) {
     geometry::Polygon2d poly_c;
     poly_c.outer() = {
         geometry::Point2d(120, 0), geometry::Point2d(140, 0),
@@ -147,19 +146,7 @@ TEST_F(CostmapBuilderTest, GapBetweenZonesBecomesDrivableTransitionSpace) {
     math::Pose2d start(0.0, 0.0, math::Angle::from_radians(0.0));
     math::Pose2d goal(130.0, 5.0, math::Angle::from_radians(0.0));
 
-    auto costmap = builder.build(start, goal);
-
-    const grid_map::Position gap_pos(70.0, 5.0);
-    const float zone_value =
-        costmap.atPosition(costs::CostmapLayerNames::ZONE_CONSTRAINTS, gap_pos);
-    const float combined_cost =
-        costmap.atPosition(costs::CostmapLayerNames::COMBINED_COST, gap_pos);
-    const float static_cost =
-        costmap.atPosition(costs::CostmapLayerNames::STATIC_OBSTACLES, gap_pos);
-
-    EXPECT_FLOAT_EQ(zone_value, 1.0f);
-    EXPECT_FLOAT_EQ(static_cost, costs::CostValues::FREE_SPACE);
-    EXPECT_LT(combined_cost, costs::CostValues::LETHAL);
+    EXPECT_THROW(builder.build(start, goal), std::runtime_error);
 }
 
 TEST_F(CostmapBuilderTest, LaneMetadataLayersEncodeDirectionalHeadingAndDistance) {
@@ -172,6 +159,7 @@ TEST_F(CostmapBuilderTest, LaneMetadataLayersEncodeDirectionalHeadingAndDistance
 
     const grid_map::Position lower_lane_pos(30.0, 1.5);
     const grid_map::Position upper_lane_pos(30.0, 3.5);
+    const grid_map::Position centerline_pos(30.0, 2.5);
     const grid_map::Position maneuver_pos(0.0, 0.0);
 
     const float lower_heading =
@@ -180,14 +168,20 @@ TEST_F(CostmapBuilderTest, LaneMetadataLayersEncodeDirectionalHeadingAndDistance
         costmap.atPosition(costs::CostmapLayerNames::LANE_HEADING, upper_lane_pos);
     const float lower_distance =
         costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, lower_lane_pos);
+    const float upper_distance =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, upper_lane_pos);
+    const float centerline_distance =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, centerline_pos);
     const float maneuver_heading =
         costmap.atPosition(costs::CostmapLayerNames::LANE_HEADING, maneuver_pos);
     const float maneuver_distance =
         costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, maneuver_pos);
 
     EXPECT_NEAR(lower_heading, 0.0f, 1e-3f);
-    EXPECT_NEAR(std::abs(upper_heading), 3.14159265f, 1e-3f);
-    EXPECT_LE(lower_distance, 0.051f);
+    EXPECT_NEAR(upper_heading, 0.0f, 1e-3f);
+    EXPECT_NEAR(lower_distance, 1.0f, 0.051f);
+    EXPECT_NEAR(upper_distance, 1.0f, 0.051f);
+    EXPECT_LE(centerline_distance, 0.051f);
     EXPECT_TRUE(std::isnan(maneuver_heading));
     EXPECT_TRUE(std::isinf(maneuver_distance));
 }

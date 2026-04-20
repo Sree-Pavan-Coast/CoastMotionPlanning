@@ -88,7 +88,6 @@ int main() {
   request.start = math::Pose2d{0.0, 0.0, math::Angle::from_degrees(0.0)};
   request.goal = math::Pose2d{20.0, 2.0, math::Angle::from_degrees(0.0)};
   request.initial_behavior_name = "primary_profile";
-  request.transition_behavior_name = "maneuver_to_track_profile";
   request.dual_model_lut_path = "configs/heuristics/nh_lut_dual.bin"; // optional
 
   const auto result = planner.plan(request);
@@ -542,14 +541,12 @@ This is a lower-level building block for articulated motion planning. It is not 
 
 - `struct ZoneConstraintValues`
   - `ZONE_NONE`
-  - `ZONE_TRANSITION`
 
 - `struct CostmapConfig`
   - `double resolution`
   - `double inflation_radius_m`
   - `double inscribed_radius_m`
   - `double cost_scaling_factor`
-  - `double alpha_shape_alpha`
   - `double max_lane_cost`
   - `double max_lane_half_width`
   - `double hitch_angle_penalty_factor`
@@ -659,15 +656,18 @@ Behavior notes:
 
 - `enum class SearchFrontierRole`
   - `StartZone`
-  - `Transition`
   - `GoalZone`
+
+- `struct ZoneConnectivityIndex`
+  - `std::vector<std::vector<size_t>> adjacent_zone_indices`
+  - `bool areDirectlyConnected(size_t first_index, size_t second_index) const`
+  - `bool isIsolated(size_t zone_index) const`
 
 - `struct SearchFrontierDescriptor`
   - `size_t frontier_id`
   - `SearchFrontierRole role`
   - `std::shared_ptr<zones::Zone> zone`
   - `std::string behavior_name`
-  - `std::optional<size_t> next_frontier_id`
 
 - `struct ZoneSelectionResult`
   - `std::vector<std::shared_ptr<zones::Zone>> selected_zones`
@@ -676,9 +676,9 @@ Behavior notes:
 
 - `class ZoneSelector`
   - default constructor
-  - `ZoneSelectionResult select(const math::Pose2d& start, const math::Pose2d& goal, const std::vector<std::shared_ptr<zones::Zone>>& all_zones, double alpha = 0.0, const std::string& start_frontier_behavior = "", const std::string& transition_frontier_behavior = "") const`
+  - `ZoneSelectionResult select(const math::Pose2d& start, const math::Pose2d& goal, const std::vector<std::shared_ptr<zones::Zone>>& all_zones, const std::string& start_frontier_behavior = "") const`
+  - `static ZoneConnectivityIndex buildConnectivityIndex(const std::vector<std::shared_ptr<zones::Zone>>& zones)`
   - `static std::shared_ptr<zones::Zone> findContainingZone(const geometry::Point2d& point, const std::vector<std::shared_ptr<zones::Zone>>& zones)`
-  - `static geometry::Polygon2d computeConcaveHull(const std::vector<geometry::Polygon2d>& zone_polygons, double alpha)`
   - `static bool isInsidePolygon(const geometry::Point2d& point, const geometry::Polygon2d& polygon)`
 
 #### `costs/costmap_builder.hpp`
@@ -763,7 +763,6 @@ The planner uses this class against the `combined_cost` layer for start, goal, p
   - `double inflation_radius_m`
   - `double inscribed_radius_m`
   - `double cost_scaling_factor`
-  - `double alpha_shape_alpha`
   - `double max_lane_cost`
   - `double max_lane_half_width_m`
   - `costs::CostmapConfig toCostmapConfig() const`
@@ -842,7 +841,6 @@ Main request/result types:
   - `math::Pose2d start`
   - `math::Pose2d goal`
   - `std::string initial_behavior_name`
-  - `std::string transition_behavior_name`
   - `std::string dual_model_lut_path`
 
 - `struct HybridAStarPlannerResult`
@@ -863,7 +861,7 @@ Main class:
 
 Behavior notes:
 
-- fails fast if the initial or transition behavior name is not defined
+- fails fast if the initial behavior name is not defined
 - fails fast if robot-derived motion-primitive constraints were never injected into the behavior set
 - validates that start and goal are inside selected zones and not in collision
 - uses `ZoneSelector` and `PlannerBehaviorResolver` internally to switch profiles across frontiers
@@ -882,7 +880,6 @@ Behavior notes:
 
 - `struct PlanningAttempt`
   - `std::string profile`
-  - `std::string transition_profile`
   - `size_t attempt_index`
 
 - `struct PlannerRunResult`

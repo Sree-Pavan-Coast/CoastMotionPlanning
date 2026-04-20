@@ -16,7 +16,7 @@ class StaticObstacleLayer {
 public:
     /// Build the static_obstacles layer.
     /// @param costmap              The grid map to add the layer to
-    /// @param search_boundary      The concave hull polygon defining the operational area
+    /// @param search_boundary      The exact selected-zone search boundary
     /// @param obstacle_polygons    Runtime obstacle polygons to stamp as lethal cells
     static void build(
         grid_map::GridMap& costmap,

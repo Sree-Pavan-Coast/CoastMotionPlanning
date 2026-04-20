@@ -44,10 +44,10 @@ grid_map::GridMap CostmapBuilder::build(const math::Pose2d& start,
                                         const std::vector<geometry::Polygon2d>& obstacle_polygons) {
     auto total_start = Clock::now();
 
-    // ---- Step 1: Zone Selection + Concave Hull ----
+    // ---- Step 1: Zone Selection + Exact Zone Union ----
     auto t = Clock::now();
     ZoneSelector selector;
-    auto selection = selector.select(start, goal, all_zones_, config_.alpha_shape_alpha);
+    auto selection = selector.select(start, goal, all_zones_);
     recordTiming("costmap.zone_selection", t, profiler_);
 
     auto costmap = build(selection, goal, obstacle_polygons);

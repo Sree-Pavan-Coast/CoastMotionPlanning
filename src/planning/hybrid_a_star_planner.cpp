@@ -327,8 +327,6 @@ std::string frontierRoleName(costs::SearchFrontierRole role) {
     switch (role) {
     case costs::SearchFrontierRole::StartZone:
         return "start_zone";
-    case costs::SearchFrontierRole::Transition:
-        return "transition";
     case costs::SearchFrontierRole::GoalZone:
         return "goal_zone";
     }
@@ -838,7 +836,6 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
 
     if (debug_trace != nullptr) {
         debug_trace->initial_behavior_name = request.initial_behavior_name;
-        debug_trace->transition_behavior_name = request.transition_behavior_name;
     }
 
     const auto finalizeResult =
@@ -913,13 +910,6 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         return failWithDetail(
             "Initial planner behavior '" + request.initial_behavior_name + "' is not defined.");
     }
-    if (!request.transition_behavior_name.empty() &&
-        !behavior_set_.contains(request.transition_behavior_name)) {
-        return failWithDetail(
-            "Transition planner behavior '" + request.transition_behavior_name +
-            "' is not defined.");
-    }
-
     const PlannerBehaviorProfile& initial_profile =
         behavior_set_.get(request.initial_behavior_name);
     if (initial_profile.motion_primitives.min_turning_radius_m <= 0.0 ||
@@ -937,9 +927,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             request.start,
             request.goal,
             all_zones_,
-            initial_profile.costmap.alpha_shape_alpha,
-            request.initial_behavior_name,
-            request.transition_behavior_name);
+            request.initial_behavior_name);
         if (debug_trace != nullptr) {
             debug_trace->zone_selection_ms =
                 elapsedMilliseconds(selection_start_time, Clock::now());

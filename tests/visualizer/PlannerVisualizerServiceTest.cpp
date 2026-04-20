@@ -250,6 +250,21 @@ std::string selkirkMapYaml() {
     return readTextFile(std::filesystem::path(configsRoot()) / "maps" / "selkirk_map.yaml");
 }
 
+std::string largoMapYaml() {
+    return readTextFile(std::filesystem::path(configsRoot()) / "maps" / "largo_map.yaml");
+}
+
+double normalizedHeadingDeltaDegrees(double first_deg, double second_deg) {
+    double delta = second_deg - first_deg;
+    while (delta <= -180.0) {
+        delta += 360.0;
+    }
+    while (delta > 180.0) {
+        delta -= 360.0;
+    }
+    return std::abs(delta);
+}
+
 TEST(PlannerVisualizerServiceTest, MakePoseNormalizesHeadingDegrees) {
     const auto pose = PlannerVisualizerService::makePose(PoseDto{1.5, -2.0, 450.0}, "start");
     EXPECT_DOUBLE_EQ(pose.x, 1.5);
@@ -450,6 +465,143 @@ TEST(PlannerVisualizerServiceTest, SelkirkBoundaryGoal212ReportsCollisionFromMan
     EXPECT_FALSE(result.success);
     EXPECT_NE(result.detail.find("Goal pose is in collision"), std::string::npos)
         << result.detail;
+}
+
+TEST(PlannerVisualizerServiceTest, SelkirkTrackPromotionKeepsHeadingBinsConsistent) {
+    auto service = PlannerVisualizerService(PlannerVisualizerServiceConfig{
+        makeTempConfigsRoot(true),
+        "Pro_XD"
+    });
+    const auto map = service.loadMap(MapLoadRequest{
+        "selkirk_map.yaml",
+        selkirkMapYaml(),
+        "Pro_XD"
+    });
+
+    const auto result = service.plan(PlanRequest{
+        map.map_id,
+        "Pro_XD",
+        PoseDto{203825.03, 414374.09, 0.0},
+        PoseDto{203831.52, 414408.56, 120.0}
+    });
+
+    ASSERT_TRUE(result.success) << result.detail;
+    EXPECT_TRUE(result.debug_mode);
+    ASSERT_FALSE(result.debug_report_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(result.debug_report_path));
+
+    const json report = loadJsonFile(result.debug_report_path);
+    ASSERT_TRUE(report.contains("attempts"));
+
+    const auto successful_attempt = std::find_if(
+        report.at("attempts").begin(),
+        report.at("attempts").end(),
+        [](const json& attempt) {
+            return attempt.at("result").at("success").get<bool>();
+        });
+    ASSERT_NE(successful_attempt, report.at("attempts").end());
+
+    ASSERT_TRUE(successful_attempt->contains("debug_trace"));
+    ASSERT_TRUE(successful_attempt->at("debug_trace").contains("expansions"));
+    const auto& expansions = successful_attempt->at("debug_trace").at("expansions");
+
+    const auto promoted_expansion = std::find_if(
+        expansions.begin(),
+        expansions.end(),
+        [](const json& expansion) {
+            return expansion.at("zone_name").get<std::string>() == "track_road_2" &&
+                   expansion.at("behavior_name").get<std::string>() == "track_main_road_profile" &&
+                   expansion.at("transition_promotion_reason").get<std::string>() ==
+                       "aligned_and_deep_enough";
+        });
+    ASSERT_NE(promoted_expansion, expansions.end());
+
+    const double node_heading_deg =
+        promoted_expansion->at("pose").at("heading_deg").get<double>();
+    ASSERT_TRUE(promoted_expansion->contains("primitive_events"));
+    ASSERT_FALSE(promoted_expansion->at("primitive_events").empty());
+
+    bool saw_enqueued_track_primitive = false;
+    for (const auto& primitive : promoted_expansion->at("primitive_events")) {
+        const auto turn_direction = primitive.at("turn_direction").get<std::string>();
+        if (turn_direction != "FORWARD" &&
+            turn_direction != "LEFT" &&
+            turn_direction != "RIGHT") {
+            continue;
+        }
+        if (primitive.at("outcome").get<std::string>() != "enqueued") {
+            continue;
+        }
+        saw_enqueued_track_primitive = true;
+        const double successor_heading_deg =
+            primitive.at("successor_pose").at("heading_deg").get<double>();
+        EXPECT_LE(
+            normalizedHeadingDeltaDegrees(node_heading_deg, successor_heading_deg),
+            5.1)
+            << primitive.dump();
+    }
+    EXPECT_TRUE(saw_enqueued_track_primitive);
+}
+
+TEST(PlannerVisualizerServiceTest, LargoDebugTraceShowsEntryBehaviorPromotionOnTrackHandoff) {
+    auto service = PlannerVisualizerService(PlannerVisualizerServiceConfig{
+        makeTempConfigsRoot(true),
+        "Pro_XD"
+    });
+    const auto map = service.loadMap(MapLoadRequest{
+        "largo_map.yaml",
+        largoMapYaml(),
+        "Pro_XD"
+    });
+
+    const auto result = service.plan(PlanRequest{
+        map.map_id,
+        "Pro_XD",
+        PoseDto{3.64, 11.75, 0.0},
+        PoseDto{76.95, 1.36, 0.0}
+    });
+
+    ASSERT_TRUE(result.success) << result.detail;
+    EXPECT_TRUE(result.debug_mode);
+    ASSERT_FALSE(result.debug_report_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(result.debug_report_path));
+
+    const json report = loadJsonFile(result.debug_report_path);
+    ASSERT_TRUE(report.contains("attempts"));
+    ASSERT_FALSE(report.at("attempts").empty());
+
+    const auto successful_attempt = std::find_if(
+        report.at("attempts").begin(),
+        report.at("attempts").end(),
+        [](const json& attempt) {
+            return attempt.at("result").at("success").get<bool>();
+        });
+    ASSERT_NE(successful_attempt, report.at("attempts").end());
+    ASSERT_TRUE(successful_attempt->contains("debug_trace"));
+    ASSERT_TRUE(successful_attempt->at("debug_trace").contains("expansions"));
+
+    bool saw_entry_behavior = false;
+    bool saw_steady_behavior = false;
+    for (const auto& expansion : successful_attempt->at("debug_trace").at("expansions")) {
+        if (expansion.at("zone_name").get<std::string>() != "largo_main_road_entry") {
+            continue;
+        }
+        saw_entry_behavior =
+            saw_entry_behavior ||
+            (expansion.at("transition_entry_behavior_active").get<bool>() &&
+             expansion.at("behavior_name").get<std::string>() == "maneuver_to_track_profile" &&
+             expansion.at("transition_entry_behavior_name").get<std::string>() ==
+                 "maneuver_to_track_profile" &&
+             expansion.at("transition_steady_behavior_name").get<std::string>() ==
+                 "track_main_road_profile");
+        saw_steady_behavior =
+            saw_steady_behavior ||
+            (!expansion.at("transition_entry_behavior_active").get<bool>() &&
+             expansion.at("behavior_name").get<std::string>() == "track_main_road_profile");
+    }
+
+    EXPECT_TRUE(saw_entry_behavior);
+    EXPECT_TRUE(saw_steady_behavior);
 }
 
 TEST(PlannerVisualizerServiceTest, DebugModeWritesProfilingSummaryIntoReport) {

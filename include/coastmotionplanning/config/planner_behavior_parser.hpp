@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <yaml-cpp/yaml.h>
 
@@ -16,6 +17,7 @@ using PlannerBehaviorProfiles =
 struct PlannerBehaviorConfigFile {
     planning::PlannerBehaviorGlobalConfig global;
     PlannerBehaviorProfiles profiles;
+    std::vector<planning::ZoneTypeTransitionPolicy> transition_policies;
 };
 
 class PlannerBehaviorParser {
@@ -32,6 +34,9 @@ private:
     static void validateActiveLayers(const YAML::Node& active_layers_node,
                                      const std::string& profile_name);
     static planning::PlannerBehaviorProfile parseProfile(const YAML::Node& profile_node);
+    static std::vector<planning::ZoneTypeTransitionPolicy> parseTransitionPolicies(
+        const YAML::Node& behaviors_root,
+        const PlannerBehaviorProfiles& profiles);
 };
 
 } // namespace config

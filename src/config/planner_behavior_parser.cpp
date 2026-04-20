@@ -1,7 +1,11 @@
 #include "coastmotionplanning/config/planner_behavior_parser.hpp"
 
+#include <cmath>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
+
+#include "coastmotionplanning/zones/zone_type_utils.hpp"
 
 namespace coastmotionplanning {
 namespace config {
@@ -47,7 +51,8 @@ PlannerBehaviorConfigFile PlannerBehaviorParser::parse(const std::string& behavi
 
     for (const auto& root_entry : behaviors_root) {
         const std::string key = root_entry.first.as<std::string>("");
-        if (key != "schema" && key != "global" && key != "behaviors") {
+        if (key != "schema" && key != "global" && key != "behaviors" &&
+            key != "transitions") {
             throw std::runtime_error(
                 "Planner behavior file has unexpected top-level key '" + key + "'.");
         }
@@ -87,6 +92,9 @@ PlannerBehaviorConfigFile PlannerBehaviorParser::parse(const std::string& behavi
     if (config_file.profiles.empty()) {
         throw std::runtime_error("Planner behavior file has no behavior profiles: " + behaviors_filepath);
     }
+
+    config_file.transition_policies =
+        parseTransitionPolicies(behaviors_root, config_file.profiles);
 
     return config_file;
 }
@@ -266,6 +274,114 @@ planning::PlannerBehaviorProfile PlannerBehaviorParser::parseProfile(
     }
 
     return profile;
+}
+
+std::vector<planning::ZoneTypeTransitionPolicy> PlannerBehaviorParser::parseTransitionPolicies(
+    const YAML::Node& behaviors_root,
+    const PlannerBehaviorProfiles& profiles) {
+    const YAML::Node transitions_node = behaviors_root["transitions"];
+    if (!transitions_node) {
+        return {};
+    }
+    if (!transitions_node.IsSequence()) {
+        throw std::runtime_error(
+            "Planner behavior file 'transitions' node must be a sequence.");
+    }
+
+    std::vector<planning::ZoneTypeTransitionPolicy> policies;
+    policies.reserve(transitions_node.size());
+    std::unordered_set<std::string> seen_pairs;
+
+    for (size_t index = 0; index < transitions_node.size(); ++index) {
+        const YAML::Node policy_node = transitions_node[index];
+        const std::string label = "transitions[" + std::to_string(index) + "]";
+        if (!policy_node.IsMap()) {
+            throw std::runtime_error(label + " must be a map.");
+        }
+
+        for (const auto& entry : policy_node) {
+            const std::string key = entry.first.as<std::string>("");
+            if (key != "from_zone_type" &&
+                key != "to_zone_type" &&
+                key != "entry_behavior" &&
+                key != "min_depth_m" &&
+                key != "max_depth_m" &&
+                key != "lane_distance_threshold_m" &&
+                key != "heading_error_threshold_deg") {
+                throw std::runtime_error(
+                    label + " has unexpected key '" + key + "'.");
+            }
+        }
+
+        const auto requireScalar = [&](const std::string& key) -> YAML::Node {
+            const YAML::Node node = policy_node[key];
+            if (!node || !node.IsScalar()) {
+                throw std::runtime_error(label + "." + key + " must be a scalar.");
+            }
+            return node;
+        };
+
+        planning::ZoneTypeTransitionPolicy policy;
+        policy.from_zone_type = requireScalar("from_zone_type").as<std::string>("");
+        policy.to_zone_type = requireScalar("to_zone_type").as<std::string>("");
+        policy.entry_behavior = requireScalar("entry_behavior").as<std::string>("");
+        policy.min_depth_m = requireScalar("min_depth_m").as<double>();
+        policy.max_depth_m = requireScalar("max_depth_m").as<double>();
+        policy.lane_distance_threshold_m =
+            requireScalar("lane_distance_threshold_m").as<double>();
+        policy.heading_error_threshold_deg =
+            requireScalar("heading_error_threshold_deg").as<double>();
+
+        if (!zones::isSupportedZoneTypeName(policy.from_zone_type)) {
+            throw std::runtime_error(
+                label + ".from_zone_type '" + policy.from_zone_type +
+                "' is not a supported zone type.");
+        }
+        if (!zones::isSupportedZoneTypeName(policy.to_zone_type)) {
+            throw std::runtime_error(
+                label + ".to_zone_type '" + policy.to_zone_type +
+                "' is not a supported zone type.");
+        }
+        if (policy.entry_behavior.empty()) {
+            throw std::runtime_error(label + ".entry_behavior must be non-empty.");
+        }
+        if (profiles.find(policy.entry_behavior) == profiles.end()) {
+            throw std::runtime_error(
+                label + ".entry_behavior '" + policy.entry_behavior +
+                "' is not defined in behaviors.");
+        }
+
+        const auto ensureFiniteNonNegative = [&](double value, const std::string& key) {
+            if (!std::isfinite(value) || value < 0.0) {
+                throw std::runtime_error(
+                    label + "." + key + " must be finite and non-negative.");
+            }
+        };
+
+        ensureFiniteNonNegative(policy.min_depth_m, "min_depth_m");
+        ensureFiniteNonNegative(policy.max_depth_m, "max_depth_m");
+        ensureFiniteNonNegative(
+            policy.lane_distance_threshold_m, "lane_distance_threshold_m");
+        if (!std::isfinite(policy.heading_error_threshold_deg) ||
+            policy.heading_error_threshold_deg <= 0.0) {
+            throw std::runtime_error(
+                label + ".heading_error_threshold_deg must be finite and positive.");
+        }
+        if (policy.max_depth_m < policy.min_depth_m) {
+            throw std::runtime_error(
+                label + ".max_depth_m must be greater than or equal to min_depth_m.");
+        }
+
+        const std::string pair_key = policy.from_zone_type + "->" + policy.to_zone_type;
+        if (!seen_pairs.insert(pair_key).second) {
+            throw std::runtime_error(
+                "Planner behavior file repeats transition policy '" + pair_key + "'.");
+        }
+
+        policies.push_back(std::move(policy));
+    }
+
+    return policies;
 }
 
 } // namespace config

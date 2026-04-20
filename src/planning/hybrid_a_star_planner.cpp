@@ -20,6 +20,11 @@
 #include <utility>
 #include <vector>
 
+#include <boost/geometry/algorithms/area.hpp>
+#include <boost/geometry/algorithms/correct.hpp>
+#include <boost/geometry/algorithms/intersection.hpp>
+#include <boost/geometry/geometries/multi_linestring.hpp>
+#include <boost/geometry/geometries/multi_polygon.hpp>
 #include <grid_map_core/grid_map_core.hpp>
 
 #include "coastmotionplanning/collision_checking/collision_checker.hpp"
@@ -46,15 +51,26 @@ using costs::ZoneSelectionResult;
 using motion_primitives::CarMotionTable;
 using motion_primitives::MotionTableConfig;
 using motion_primitives::TurnDirection;
+using MultiLineString2d = geometry::bg::model::multi_linestring<geometry::LineString2d>;
+using MultiPolygon2d = geometry::bg::model::multi_polygon<geometry::Polygon2d>;
 
 constexpr double LARGE_COST = 1e9;
 constexpr double kTerminalStraightYawDeltaToleranceRad = 1e-3;
 constexpr double kTerminalStraightAlignmentToleranceRad = 5e-2;
+constexpr double kProjectionEpsilon = 1e-12;
+constexpr double kOverlapAreaTolerance = 1e-9;
+constexpr double kCandidateDedupTolerance = 1e-6;
 enum class TurnClass {
     UNKNOWN = 0,
     STRAIGHT,
     LEFT,
     RIGHT
+};
+
+enum class TransitionPromotionReasonCode {
+    None = 0,
+    AlignedAndDeepEnough,
+    MaxDepthForced
 };
 
 struct SearchNode {
@@ -71,6 +87,9 @@ struct SearchNode {
     common::MotionDirection inbound_motion{common::MotionDirection::Forward};
     double same_motion_length_m{0.0};
     double same_motion_remaining_to_change_m{0.0};
+    ActiveZoneTransitionState active_transition;
+    TransitionPromotionReasonCode transition_promotion_reason{
+        TransitionPromotionReasonCode::None};
 };
 
 struct DiscreteStateKey {
@@ -81,6 +100,8 @@ struct DiscreteStateKey {
     int turn_class{0};
     int same_motion_length_bucket{0};
     int same_motion_remaining_bucket{0};
+    int transition_state{0};
+    int transition_entry_station_bucket{0};
 
     bool operator==(const DiscreteStateKey& other) const {
         return x_idx == other.x_idx &&
@@ -89,7 +110,9 @@ struct DiscreteStateKey {
                motion_state == other.motion_state &&
                turn_class == other.turn_class &&
                same_motion_length_bucket == other.same_motion_length_bucket &&
-               same_motion_remaining_bucket == other.same_motion_remaining_bucket;
+               same_motion_remaining_bucket == other.same_motion_remaining_bucket &&
+               transition_state == other.transition_state &&
+               transition_entry_station_bucket == other.transition_entry_station_bucket;
     }
 };
 
@@ -104,6 +127,10 @@ struct DiscreteStateKeyHash {
             std::hash<int>()(key.same_motion_length_bucket) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
         seed ^=
             std::hash<int>()(key.same_motion_remaining_bucket) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int>()(key.transition_state) + 0x9e3779b9 +
+            (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int>()(key.transition_entry_station_bucket) + 0x9e3779b9 +
+            (seed << 6) + (seed >> 2);
         return seed;
     }
 };
@@ -158,6 +185,23 @@ struct TrackLaneRelaxationState {
     double bias_scale{1.0};
     double station_m{std::numeric_limits<double>::quiet_NaN()};
     double distance_to_target_m{std::numeric_limits<double>::infinity()};
+};
+
+struct PlannerPolylineSegment {
+    geometry::Point2d start;
+    geometry::Point2d end;
+    double heading_rad{0.0};
+    double length_sq{0.0};
+    double length_m{0.0};
+    double station_start_m{0.0};
+};
+
+struct PlannerPolylineProjection {
+    bool valid{false};
+    geometry::Point2d nearest_point;
+    double distance_sq{std::numeric_limits<double>::infinity()};
+    double station_m{0.0};
+    double heading_rad{0.0};
 };
 
 struct FrontierCounters {
@@ -241,6 +285,307 @@ double normalizeAngleUnsigned(double angle) {
     return angle;
 }
 
+double squaredDistance(const geometry::Point2d& first, const geometry::Point2d& second) {
+    const double dx = first.x() - second.x();
+    const double dy = first.y() - second.y();
+    return (dx * dx) + (dy * dy);
+}
+
+std::vector<PlannerPolylineSegment> buildPlannerPolylineSegments(
+    const std::vector<math::Pose2d>& polyline) {
+    std::vector<PlannerPolylineSegment> segments;
+    double station = 0.0;
+    for (size_t idx = 0; idx + 1 < polyline.size(); ++idx) {
+        const geometry::Point2d start(polyline[idx].x, polyline[idx].y);
+        const geometry::Point2d end(polyline[idx + 1].x, polyline[idx + 1].y);
+        const double dx = end.x() - start.x();
+        const double dy = end.y() - start.y();
+        const double length_sq = (dx * dx) + (dy * dy);
+        if (length_sq <= kProjectionEpsilon) {
+            continue;
+        }
+
+        const double length_m = std::sqrt(length_sq);
+        PlannerPolylineSegment segment;
+        segment.start = start;
+        segment.end = end;
+        segment.heading_rad = std::atan2(dy, dx);
+        segment.length_sq = length_sq;
+        segment.length_m = length_m;
+        segment.station_start_m = station;
+        segments.push_back(segment);
+        station += length_m;
+    }
+    return segments;
+}
+
+double plannerPolylineLength(const std::vector<PlannerPolylineSegment>& segments) {
+    if (segments.empty()) {
+        return 0.0;
+    }
+    const auto& last = segments.back();
+    return last.station_start_m + last.length_m;
+}
+
+PlannerPolylineProjection projectOntoPlannerSegments(
+    const geometry::Point2d& point,
+    const std::vector<PlannerPolylineSegment>& segments) {
+    PlannerPolylineProjection best;
+    for (const auto& segment : segments) {
+        if (segment.length_sq <= kProjectionEpsilon) {
+            continue;
+        }
+
+        const double px = point.x();
+        const double py = point.y();
+        const double x0 = segment.start.x();
+        const double y0 = segment.start.y();
+        const double x1 = segment.end.x();
+        const double y1 = segment.end.y();
+        const double dx = x1 - x0;
+        const double dy = y1 - y0;
+        const double t = std::clamp(
+            (((px - x0) * dx) + ((py - y0) * dy)) / segment.length_sq,
+            0.0,
+            1.0);
+        const geometry::Point2d nearest_point(x0 + (t * dx), y0 + (t * dy));
+        const double distance_sq = squaredDistance(point, nearest_point);
+        if (best.valid && distance_sq >= best.distance_sq) {
+            continue;
+        }
+
+        best.valid = true;
+        best.nearest_point = nearest_point;
+        best.distance_sq = distance_sq;
+        best.station_m = segment.station_start_m + (t * segment.length_m);
+        best.heading_rad = segment.heading_rad;
+    }
+    return best;
+}
+
+std::optional<math::Pose2d> interpolatePoseOnPlannerSegments(
+    const std::vector<PlannerPolylineSegment>& segments,
+    double station_m) {
+    if (segments.empty()) {
+        return std::nullopt;
+    }
+
+    const double total_length = plannerPolylineLength(segments);
+    const double clamped_station = std::clamp(station_m, 0.0, total_length);
+    for (const auto& segment : segments) {
+        const double segment_end = segment.station_start_m + segment.length_m;
+        if (clamped_station > segment_end + kProjectionEpsilon) {
+            continue;
+        }
+
+        const double local_station = clamped_station - segment.station_start_m;
+        const double t = segment.length_m > kProjectionEpsilon
+            ? std::clamp(local_station / segment.length_m, 0.0, 1.0)
+            : 0.0;
+        return math::Pose2d(
+            segment.start.x() + ((segment.end.x() - segment.start.x()) * t),
+            segment.start.y() + ((segment.end.y() - segment.start.y()) * t),
+            math::Angle::from_radians(segment.heading_rad));
+    }
+
+    const auto& last = segments.back();
+    return math::Pose2d(
+        last.end.x(),
+        last.end.y(),
+        math::Angle::from_radians(last.heading_rad));
+}
+
+geometry::Polygon2d correctedPolygon(geometry::Polygon2d polygon) {
+    geometry::bg::correct(polygon);
+    return polygon;
+}
+
+geometry::LineString2d boundaryLineString(const geometry::Polygon2d& polygon) {
+    geometry::LineString2d boundary;
+    const auto& outer = polygon.outer();
+    if (outer.empty()) {
+        return boundary;
+    }
+
+    for (const auto& point : outer) {
+        boundary.push_back(point);
+    }
+    if (!geometry::arePointsClose(boundary.front(), boundary.back())) {
+        boundary.push_back(boundary.front());
+    }
+    return boundary;
+}
+
+void appendUniqueCandidate(std::vector<geometry::Point2d>& candidates,
+                           const geometry::Point2d& candidate) {
+    const bool duplicate = std::any_of(
+        candidates.begin(),
+        candidates.end(),
+        [&](const auto& existing) {
+            return geometry::arePointsClose(existing, candidate, kCandidateDedupTolerance);
+        });
+    if (!duplicate) {
+        candidates.push_back(candidate);
+    }
+}
+
+void appendLineCandidates(std::vector<geometry::Point2d>& candidates,
+                          const geometry::LineString2d& line) {
+    if (line.empty()) {
+        return;
+    }
+
+    for (size_t idx = 0; idx < line.size(); ++idx) {
+        appendUniqueCandidate(candidates, line[idx]);
+        if (idx + 1 >= line.size()) {
+            continue;
+        }
+        if (geometry::arePointsClose(line[idx], line[idx + 1], kCandidateDedupTolerance)) {
+            continue;
+        }
+        appendUniqueCandidate(
+            candidates,
+            geometry::Point2d(
+                (line[idx].x() + line[idx + 1].x()) * 0.5,
+                (line[idx].y() + line[idx + 1].y()) * 0.5));
+    }
+}
+
+void appendPolygonCandidates(std::vector<geometry::Point2d>& candidates,
+                             const geometry::Polygon2d& polygon) {
+    const auto& outer = polygon.outer();
+    if (outer.size() < 2) {
+        return;
+    }
+
+    const size_t unique_vertex_count =
+        geometry::arePointsClose(outer.front(), outer.back(), kCandidateDedupTolerance)
+            ? outer.size() - 1
+            : outer.size();
+    for (size_t idx = 0; idx < unique_vertex_count; ++idx) {
+        appendUniqueCandidate(candidates, outer[idx]);
+        const auto& next = outer[(idx + 1) % unique_vertex_count];
+        if (geometry::arePointsClose(outer[idx], next, kCandidateDedupTolerance)) {
+            continue;
+        }
+        appendUniqueCandidate(
+            candidates,
+            geometry::Point2d(
+                (outer[idx].x() + next.x()) * 0.5,
+                (outer[idx].y() + next.y()) * 0.5));
+    }
+}
+
+std::vector<geometry::Point2d> deriveHandoffCandidates(
+    const geometry::Polygon2d& current_polygon,
+    const geometry::Polygon2d& next_polygon) {
+    std::vector<geometry::Point2d> candidates;
+
+    MultiPolygon2d overlap;
+    geometry::bg::intersection(
+        correctedPolygon(current_polygon),
+        correctedPolygon(next_polygon),
+        overlap);
+
+    double overlap_area = 0.0;
+    for (const auto& polygon : overlap) {
+        overlap_area += std::abs(geometry::bg::area(polygon));
+    }
+    if (overlap_area > kOverlapAreaTolerance) {
+        for (const auto& polygon : overlap) {
+            appendPolygonCandidates(candidates, correctedPolygon(polygon));
+        }
+        return candidates;
+    }
+
+    MultiLineString2d shared_boundary;
+    geometry::bg::intersection(
+        boundaryLineString(correctedPolygon(current_polygon)),
+        boundaryLineString(correctedPolygon(next_polygon)),
+        shared_boundary);
+    for (const auto& line : shared_boundary) {
+        appendLineCandidates(candidates, line);
+    }
+
+    return candidates;
+}
+
+std::optional<math::Pose2d> computeGoalDirectedTrackEntryPose(
+    const std::shared_ptr<zones::Zone>& source_zone,
+    const std::shared_ptr<zones::TrackMainRoad>& track,
+    const math::Pose2d& goal_pose,
+    double target_station_m,
+    double min_depth_m) {
+    if (source_zone == nullptr || track == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto centerline_segments = buildPlannerPolylineSegments(track->getCenterline());
+    const auto& lanes = track->getLanes();
+    if (centerline_segments.empty() || lanes.size() < 2) {
+        return std::nullopt;
+    }
+
+    const auto lane0_segments = buildPlannerPolylineSegments(lanes[0]);
+    const auto lane1_segments = buildPlannerPolylineSegments(lanes[1]);
+    if (lane0_segments.empty() || lane1_segments.empty()) {
+        return std::nullopt;
+    }
+
+    const auto candidates = deriveHandoffCandidates(
+        source_zone->getPolygon(),
+        track->getPolygon());
+    if (candidates.empty()) {
+        return std::nullopt;
+    }
+
+    const geometry::Point2d goal_point(goal_pose.x, goal_pose.y);
+    PlannerPolylineProjection entry_projection;
+    for (const auto& candidate : candidates) {
+        const auto projection = projectOntoPlannerSegments(candidate, centerline_segments);
+        if (!projection.valid) {
+            continue;
+        }
+        if (!entry_projection.valid ||
+            squaredDistance(candidate, goal_point) <
+                squaredDistance(entry_projection.nearest_point, goal_point)) {
+            entry_projection = projection;
+        }
+    }
+    if (!entry_projection.valid) {
+        return std::nullopt;
+    }
+
+    const double total_centerline_length = plannerPolylineLength(centerline_segments);
+    const size_t preferred_lane_idx =
+        target_station_m >= entry_projection.station_m ? 0u : 1u;
+    const double clamped_depth = std::max(min_depth_m, 0.0);
+    const double desired_centerline_station =
+        preferred_lane_idx == 0u
+            ? std::min(total_centerline_length, entry_projection.station_m + clamped_depth)
+            : std::max(0.0, entry_projection.station_m - clamped_depth);
+    if (std::abs(desired_centerline_station - entry_projection.station_m) <= kProjectionEpsilon) {
+        return std::nullopt;
+    }
+
+    const double desired_lane_station =
+        preferred_lane_idx == 0u
+            ? desired_centerline_station
+            : total_centerline_length - desired_centerline_station;
+    const auto snapped_pose = interpolatePoseOnPlannerSegments(
+        preferred_lane_idx == 0u ? lane0_segments : lane1_segments,
+        desired_lane_station);
+    if (!snapped_pose.has_value()) {
+        return std::nullopt;
+    }
+    if (!costs::ZoneSelector::isInsidePolygon(
+            geometry::Point2d(snapped_pose->x, snapped_pose->y),
+            track->getPolygon())) {
+        return std::nullopt;
+    }
+    return snapped_pose;
+}
+
 TurnClass classifyTurn(TurnDirection turn_direction) {
     switch (turn_direction) {
         case TurnDirection::FORWARD:
@@ -296,7 +641,14 @@ DiscreteStateKey discretizeState(const math::Pose2d& pose,
             : 0,
         static_cast<int>(node.last_turn_class),
         discretizeMetric(node.same_motion_length_m),
-        discretizeMetric(node.same_motion_remaining_to_change_m)
+        discretizeMetric(node.same_motion_remaining_to_change_m),
+        node.active_transition.isActive()
+            ? static_cast<int>(node.active_transition.source_frontier_id) + 1
+            : 0,
+        node.active_transition.isActive()
+            ? static_cast<int>(std::lround(
+                  node.active_transition.entry_station_m / xy_resolution_m))
+            : 0
     };
 }
 
@@ -367,6 +719,19 @@ std::string turnDirectionName(TurnDirection turn_direction) {
         return "UNKNOWN";
     }
     return "UNKNOWN";
+}
+
+std::string transitionPromotionReasonName(
+    TransitionPromotionReasonCode promotion_reason) {
+    switch (promotion_reason) {
+    case TransitionPromotionReasonCode::AlignedAndDeepEnough:
+        return "aligned_and_deep_enough";
+    case TransitionPromotionReasonCode::MaxDepthForced:
+        return "max_depth_forced";
+    case TransitionPromotionReasonCode::None:
+        break;
+    }
+    return "";
 }
 
 double readLayerCost(const grid_map::GridMap& costmap,
@@ -1066,17 +1431,15 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     }
 
     std::unordered_map<std::string, SearchContext> contexts_by_behavior;
-    for (const auto& frontier : selection.frontiers) {
-        const std::string behavior_name =
-            frontier.behavior_name.empty()
-                ? request.initial_behavior_name
-                : frontier.behavior_name;
-        if (contexts_by_behavior.find(behavior_name) == contexts_by_behavior.end()) {
-            contexts_by_behavior.emplace(
-                behavior_name,
-                buildSearchContext(behavior_name, behavior_set_));
-        }
+    for (const auto& behavior_name : behavior_set_.names()) {
+        contexts_by_behavior.emplace(
+            behavior_name,
+            buildSearchContext(behavior_name, behavior_set_));
     }
+    const auto getSearchContext =
+        [&](const std::string& behavior_name) -> const SearchContext& {
+            return contexts_by_behavior.at(behavior_name);
+        };
 
     frontier_runtimes.reserve(selection.frontiers.size());
     for (const auto& frontier : selection.frontiers) {
@@ -1085,8 +1448,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         if (runtime->descriptor.behavior_name.empty()) {
             runtime->descriptor.behavior_name = request.initial_behavior_name;
         }
-        runtime->context =
-            &contexts_by_behavior.at(runtime->descriptor.behavior_name);
+        runtime->context = &getSearchContext(runtime->descriptor.behavior_name);
         runtime->best_g_by_key.reserve(50000);
         runtime->debug_summary.frontier_id = runtime->descriptor.frontier_id;
         runtime->debug_summary.frontier_role =
@@ -1129,7 +1491,8 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     search_loop_start_time = Clock::now();
     search_loop_started = true;
 
-    const SearchContext& start_context = *frontier_runtimes.front()->context;
+    const SearchContext& start_context =
+        getSearchContext(frontier_runtimes.front()->descriptor.behavior_name);
     const double normalized_start_yaw = normalizeAngleUnsigned(request.start.theta.radians());
     const unsigned int start_heading_bin =
         start_context.motion_table.getClosestAngularBin(normalized_start_yaw);
@@ -1158,7 +1521,9 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         false,
         common::MotionDirection::Forward,
         0.0,
-        0.0
+        0.0,
+        ActiveZoneTransitionState{},
+        TransitionPromotionReasonCode::None
     });
 
     const DiscreteStateKey start_key = discretizeState(
@@ -1344,7 +1709,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             }
 
             const FrontierRuntime& node_frontier = *frontier_runtimes[node.frontier_id];
-            const SearchContext& node_context = *node_frontier.context;
+            const SearchContext& node_context = getSearchContext(node.behavior_name);
             const PlannerBehaviorProfile& node_profile =
                 *node_context.profile;
             const HeuristicModel model =
@@ -1376,14 +1741,19 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
 
             std::vector<ResolvedPlannerBehavior> wp_resolutions;
             wp_resolutions.reserve(waypoints.size());
-            wp_resolutions.push_back(ResolvedPlannerBehavior{
-                node.frontier_id,
-                node.zone,
-                node.behavior_name,
-                &node_profile,
-                false,
-                false
-            });
+            ResolvedPlannerBehavior current_resolution;
+            current_resolution.frontier_id = node.frontier_id;
+            current_resolution.zone = node.zone;
+            current_resolution.behavior_name = node.behavior_name;
+            current_resolution.profile = &node_profile;
+            current_resolution.steady_behavior_name =
+                node.active_transition.isActive()
+                    ? node_frontier.descriptor.behavior_name
+                    : node.behavior_name;
+            current_resolution.active_transition = node.active_transition;
+            current_resolution.transition_promotion_reason =
+                transitionPromotionReasonName(node.transition_promotion_reason);
+            wp_resolutions.push_back(current_resolution);
             for (size_t i = 1; i < waypoints.size(); ++i) {
                 const auto& wp = waypoints[i];
                 robot::RobotState rs;
@@ -1418,18 +1788,20 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     resolved = PlannerBehaviorResolver::resolve(
                         wp_pose,
                         costmap,
-                        node.frontier_id,
-                        node.zone,
-                        node.behavior_name,
+                        current_resolution.frontier_id,
+                        current_resolution.zone,
+                        current_resolution.behavior_name,
                         selection.frontiers,
-                        behavior_set_);
+                        behavior_set_,
+                        current_resolution.active_transition);
                 }
                 if (resolved.profile == nullptr ||
-                    resolved.frontier_id < node.frontier_id) {
+                    resolved.frontier_id < current_resolution.frontier_id) {
                     outcome.debug_event.outcome = "failed";
                     outcome.debug_event.detail = "path_validation_failed";
                     return outcome;
                 }
+                current_resolution = resolved;
                 wp_resolutions.push_back(resolved);
             }
 
@@ -1525,6 +1897,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                         ++frontier.debug_summary.stale_entries_skipped;
                     } else {
                         have_entry = true;
+                        active_workers.fetch_add(1);
                     }
                 }
             }
@@ -1539,14 +1912,13 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 continue;
             }
 
-            active_workers.fetch_add(1);
-
             SearchNode current_node;
             {
                 std::lock_guard<std::mutex> nodes_lock(nodes_mutex);
                 current_node = nodes[entry.node_index];
             }
-            const SearchContext& current_context = *frontier.context;
+            const SearchContext& current_context =
+                getSearchContext(current_node.behavior_name);
             const PlannerBehaviorProfile& current_profile = *current_context.profile;
 
             PlannerExpansionDebugEvent expansion_debug;
@@ -1569,6 +1941,40 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 {
                     std::lock_guard<std::mutex> frontier_lock(frontier.mutex);
                     expansion_debug.open_queue_size_after_pop = frontier.open_queue.size();
+                }
+                expansion_debug.transition_steady_behavior_name =
+                    frontier.descriptor.behavior_name;
+                expansion_debug.transition_promotion_reason =
+                    transitionPromotionReasonName(
+                        current_node.transition_promotion_reason);
+                if (current_node.active_transition.isActive()) {
+                    const grid_map::Position current_position(
+                        current_node.pose.x,
+                        current_node.pose.y);
+                    expansion_debug.transition_entry_behavior_active = true;
+                    expansion_debug.transition_entry_behavior_name =
+                        current_node.active_transition.policy->entry_behavior;
+                    expansion_debug.transition_steady_behavior_name =
+                        frontier.descriptor.behavior_name;
+                    expansion_debug.transition_entry_station_m =
+                        current_node.active_transition.entry_station_m;
+                    expansion_debug.transition_track_station_m = readRawLayerValue(
+                        costmap,
+                        costs::CostmapLayerNames::TRACK_STATION,
+                        current_position);
+                    expansion_debug.transition_lane_distance_m = readRawLayerValue(
+                        costmap,
+                        costs::CostmapLayerNames::LANE_DISTANCE,
+                        current_position);
+                    const double lane_heading = readRawLayerValue(
+                        costmap,
+                        costs::CostmapLayerNames::LANE_HEADING,
+                        current_position);
+                    if (std::isfinite(lane_heading)) {
+                        expansion_debug.transition_lane_heading_error_rad =
+                            std::abs(normalizeAngleSigned(
+                                current_node.pose.theta.radians() - lane_heading));
+                    }
                 }
             }
 
@@ -1774,7 +2180,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     primitive_event.travel_m = travel_m;
                 }
 
-                const grid_map::Position successor_position(successor_pose.x, successor_pose.y);
+                grid_map::Position successor_position(successor_pose.x, successor_pose.y);
                 if (!costmap.isInside(successor_position)) {
                     if (debug_trace != nullptr) {
                         primitive_event.outcome = "out_of_bounds";
@@ -1794,7 +2200,8 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                         current_node.zone,
                         current_node.behavior_name,
                         selection.frontiers,
-                        behavior_set_);
+                        behavior_set_,
+                        current_node.active_transition);
                 }();
 
                 if (debug_trace != nullptr) {
@@ -1825,6 +2232,41 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                         recordPrimitiveEvent(std::move(primitive_event));
                     }
                     return false;
+                }
+
+                double successor_travel_m = travel_m;
+                if (resolved.frontier_id != current_node.frontier_id &&
+                    resolved.active_transition.isActive()) {
+                    const auto destination_track =
+                        std::dynamic_pointer_cast<zones::TrackMainRoad>(resolved.zone);
+                    if (destination_track != nullptr &&
+                        current_node.zone != nullptr &&
+                        resolved.frontier_id < frontier_track_lane_guidance.size() &&
+                        frontier_track_lane_guidance[resolved.frontier_id].enabled) {
+                        const auto snapped_pose = computeGoalDirectedTrackEntryPose(
+                            current_node.zone,
+                            destination_track,
+                            request.goal,
+                            frontier_track_lane_guidance[resolved.frontier_id].target_station_m,
+                            resolved.active_transition.policy->min_depth_m);
+                        if (!snapped_pose.has_value()) {
+                            if (debug_trace != nullptr) {
+                                primitive_event.outcome = "primitive_disallowed";
+                                primitive_event.detail = "track_entry_alignment_unavailable";
+                                recordPrimitiveEvent(std::move(primitive_event));
+                            }
+                            return false;
+                        }
+                        successor_pose = *snapped_pose;
+                        successor_position = grid_map::Position(successor_pose.x, successor_pose.y);
+                        successor_travel_m = std::hypot(
+                            successor_pose.x - current_node.pose.x,
+                            successor_pose.y - current_node.pose.y);
+                        if (debug_trace != nullptr) {
+                            primitive_event.successor_pose = successor_pose;
+                            primitive_event.travel_m = successor_travel_m;
+                        }
+                    }
                 }
 
                 const auto successor_lane_relaxation = computeTrackLaneRelaxation(
@@ -1908,7 +2350,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                         successor_lane_relaxation.bias_scale,
                         successor_pose.theta.radians(),
                         projection.turn_dir,
-                        travel_m);
+                        successor_travel_m);
                 }();
                 const double new_g = current_node.g + edge_cost;
 
@@ -1916,7 +2358,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     computeNextSameMotionLength(
                         current_node,
                         successor_motion,
-                        travel_m,
+                        successor_travel_m,
                         global_max_same_motion_length_m);
                 const double successor_same_motion_remaining_to_change_m =
                     computeNextSameMotionRemainingToChange(
@@ -1924,12 +2366,12 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                         current_profile,
                         *resolved.profile,
                         successor_motion,
-                        travel_m);
+                        successor_travel_m);
 
-                const FrontierRuntime& destination_frontier =
-                    *frontier_runtimes[resolved.frontier_id];
-                const SearchContext& destination_context = *destination_frontier.context;
-                if (resolved.frontier_id != current_node.frontier_id) {
+                const SearchContext& destination_context =
+                    getSearchContext(resolved.behavior_name);
+                if (resolved.frontier_id != current_node.frontier_id ||
+                    resolved.behavior_name != current_node.behavior_name) {
                     successor_heading_bin =
                         destination_context.motion_table.getClosestAngularBin(
                             normalizeAngleUnsigned(successor_pose.theta.radians()));
@@ -1961,6 +2403,13 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 successor_node.same_motion_length_m = successor_same_motion_length_m;
                 successor_node.same_motion_remaining_to_change_m =
                     successor_same_motion_remaining_to_change_m;
+                successor_node.active_transition = resolved.active_transition;
+                successor_node.transition_promotion_reason =
+                    resolved.transition_promotion_reason == "aligned_and_deep_enough"
+                        ? TransitionPromotionReasonCode::AlignedAndDeepEnough
+                        : (resolved.transition_promotion_reason == "max_depth_forced"
+                               ? TransitionPromotionReasonCode::MaxDepthForced
+                               : TransitionPromotionReasonCode::None);
 
                 const DiscreteStateKey successor_key = discretizeState(
                     successor_pose,

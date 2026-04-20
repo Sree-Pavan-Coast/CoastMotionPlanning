@@ -60,6 +60,15 @@ schema:
 global:
   debug_mode: false
 
+transitions:
+  - from_zone_type: "ManeuveringZone"
+    to_zone_type: "TrackMainRoad"
+    entry_behavior: "maneuver_to_track_profile"
+    min_depth_m: 1.0
+    max_depth_m: 6.0
+    lane_distance_threshold_m: 0.75
+    heading_error_threshold_deg: 20.0
+
 behaviors:
   # The strict, optimal primary planner profile
   primary_profile:

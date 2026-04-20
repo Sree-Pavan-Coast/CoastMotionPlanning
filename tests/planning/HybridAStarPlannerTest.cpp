@@ -16,6 +16,7 @@
 #include "coastmotionplanning/motion_primitives/car_motion_table.hpp"
 #include "coastmotionplanning/motion_primitives/motion_primitive_types.hpp"
 #include "coastmotionplanning/config/robots_parser.hpp"
+#include "coastmotionplanning/map/map_parser.hpp"
 #include "coastmotionplanning/planning/hybrid_a_star_planner.hpp"
 #include "coastmotionplanning/planning/planner_behavior_set.hpp"
 #include "coastmotionplanning/zones/maneuvering_zone.hpp"
@@ -69,6 +70,35 @@ std::string readFile(const std::string& path) {
     std::ostringstream buffer;
     buffer << stream.rdbuf();
     return buffer.str();
+}
+
+PlannerBehaviorSet loadBehaviorSetWithDebugMode(bool debug_mode,
+                                                const std::string& robot_name = "Pro_XD") {
+    const std::filesystem::path temp_dir =
+        std::filesystem::temp_directory_path() / "coastmotionplanning_hybrid_astar_test";
+    std::filesystem::create_directories(temp_dir);
+
+    std::string behaviors = readFile(repoPath("configs/planner_behaviors.yaml"));
+    const std::string debug_mode_disabled = "  debug_mode: false";
+    const size_t debug_mode_pos = behaviors.find(debug_mode_disabled);
+    if (debug_mode && debug_mode_pos == std::string::npos) {
+        throw std::runtime_error(
+            "Failed to locate global.debug_mode in planner_behaviors.yaml");
+    }
+    if (debug_mode) {
+        behaviors.replace(
+            debug_mode_pos,
+            debug_mode_disabled.size(),
+            "  debug_mode: true");
+    }
+
+    std::ofstream behavior_file(temp_dir / "planner_behaviors.yaml");
+    behavior_file << behaviors;
+    behavior_file.close();
+
+    return applyRobotConstraints(
+        PlannerBehaviorSet::loadFromFile((temp_dir / "planner_behaviors.yaml").string()),
+        robot_name);
 }
 
 size_t findBehaviorProfileStart(const std::string& yaml, const std::string& profile_name) {
@@ -303,6 +333,17 @@ Pose2d makePose(double x, double y, double yaw_deg = 0.0) {
 
 Car makeCar() {
     return Car(2.0, 3.0, 0.5, 0.5);
+}
+
+Car loadRepoCar(const std::string& robot_name = "Pro_XD") {
+    return coastmotionplanning::config::RobotsParser::loadCar(
+        repoPath("configs/robots.yaml"),
+        robot_name);
+}
+
+std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> loadMapZones(
+    const std::string& relative_path) {
+    return coastmotionplanning::map::MapParser::parse(repoPath(relative_path));
 }
 
 std::vector<double> accumulateRunLengths(
@@ -700,6 +741,33 @@ TEST(HybridAStarPlannerTest, AnalyticExpansionOutputHonorsMinimumSameMotionLengt
     for (const double run_length : run_lengths) {
         EXPECT_GE(run_length + 1e-6, 5.0);
     }
+}
+
+TEST(HybridAStarPlannerTest, LargoSameTrackGoalAheadKeepsSteadyStateBehavior) {
+    const PlannerBehaviorSet behavior_set = loadBehaviorSetWithDebugMode(true);
+    const Car car = loadRepoCar();
+    const auto zones = loadMapZones("configs/maps/largo_map.yaml");
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(30.0, 1.5, 0.0);
+    request.goal = makePose(70.0, 1.5, 0.0);
+    request.initial_behavior_name = "track_main_road_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    ASSERT_NE(result.debug_trace, nullptr);
+    EXPECT_TRUE(std::all_of(
+        result.behavior_sequence.begin(),
+        result.behavior_sequence.end(),
+        [](const std::string& behavior_name) {
+            return behavior_name == "track_main_road_profile";
+        }));
+    EXPECT_FALSE(std::any_of(
+        result.debug_trace->expansions.begin(),
+        result.debug_trace->expansions.end(),
+        [](const auto& expansion) { return expansion.transition_entry_behavior_active; }));
 }
 
 TEST(HybridAStarPlannerTest, DebugModeCollectsProfilingScopesOnSuccess) {

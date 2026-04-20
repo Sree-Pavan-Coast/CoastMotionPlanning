@@ -3542,7 +3542,7 @@ zones:
             - [203753.6068263, 414547.98428617]
   - name: "zone_1_north"
     type: "ManeuveringZone"
-    planner_behavior: "parking_profile"
+    planner_behavior: "primary_profile"
     coordinate_type: "world"
     polygon:
       - [203724.569212, 414501.23811]
@@ -3552,7 +3552,7 @@ zones:
       - [203724.569212, 414501.23811]
   - name: "zone_2_middle"
     type: "ManeuveringZone"
-    planner_behavior: "parking_profile"
+    planner_behavior: "primary_profile"
     coordinate_type: "world"
     polygon:
       - [203811.220327, 414338.985551]
@@ -3561,7 +3561,7 @@ zones:
       - [203792.160327, 414374.585551]
   - name: "zone_3_south"
     type: "ManeuveringZone"
-    planner_behavior: "parking_profile"
+    planner_behavior: "primary_profile"
     coordinate_type: "world"
     polygon:
       - [203888.85, 414209.8]

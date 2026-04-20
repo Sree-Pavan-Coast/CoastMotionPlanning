@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <string>
 #include <unordered_set>
 
@@ -75,6 +76,24 @@ struct PlannerBehaviorProfile {
 
     bool isLayerActive(const std::string& layer_name) const;
     costs::CostmapConfig makeCostmapConfig() const;
+};
+
+struct ZoneTypeTransitionPolicy {
+    std::string from_zone_type;
+    std::string to_zone_type;
+    std::string entry_behavior;
+    double min_depth_m{0.0};
+    double max_depth_m{0.0};
+    double lane_distance_threshold_m{0.0};
+    double heading_error_threshold_deg{0.0};
+};
+
+struct ActiveZoneTransitionState {
+    const ZoneTypeTransitionPolicy* policy{nullptr};
+    size_t source_frontier_id{0};
+    double entry_station_m{std::numeric_limits<double>::quiet_NaN()};
+
+    bool isActive() const { return policy != nullptr; }
 };
 
 } // namespace planning

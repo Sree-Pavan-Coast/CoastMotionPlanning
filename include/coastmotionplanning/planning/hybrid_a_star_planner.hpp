@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -62,6 +63,14 @@ struct PlannerExpansionDebugEvent {
     bool lane_suppression_forward_success{false};
     bool lane_suppression_fallback{false};
     bool analytic_attempted{false};
+    bool transition_entry_behavior_active{false};
+    std::string transition_entry_behavior_name;
+    std::string transition_steady_behavior_name;
+    double transition_entry_station_m{std::numeric_limits<double>::quiet_NaN()};
+    double transition_track_station_m{std::numeric_limits<double>::quiet_NaN()};
+    double transition_lane_distance_m{std::numeric_limits<double>::infinity()};
+    double transition_lane_heading_error_rad{std::numeric_limits<double>::quiet_NaN()};
+    std::string transition_promotion_reason;
     PlannerAnalyticDebugEvent analytic_event;
     std::vector<PlannerPrimitiveDebugEvent> primitive_events;
 };

@@ -80,6 +80,14 @@ std::string validBehaviorYaml() {
         schemaSectionYaml() +
         "global:\n"
         "  debug_mode: true\n"
+        "transitions:\n"
+        "  - from_zone_type: ManeuveringZone\n"
+        "    to_zone_type: TrackMainRoad\n"
+        "    entry_behavior: primary_profile\n"
+        "    min_depth_m: 1.0\n"
+        "    max_depth_m: 6.0\n"
+        "    lane_distance_threshold_m: 0.75\n"
+        "    heading_error_threshold_deg: 20.0\n"
         "behaviors:\n"
         "  primary_profile:\n"
         "    planner:\n"
@@ -248,6 +256,10 @@ TEST_F(PlannerBehaviorParserTest, ParsesProfilesThatMatchEmbeddedSchema) {
 
     ASSERT_EQ(profiles.size(), 1);
     EXPECT_TRUE(config_file.global.debug_mode);
+    ASSERT_EQ(config_file.transition_policies.size(), 1u);
+    EXPECT_EQ(config_file.transition_policies[0].from_zone_type, "ManeuveringZone");
+    EXPECT_EQ(config_file.transition_policies[0].to_zone_type, "TrackMainRoad");
+    EXPECT_EQ(config_file.transition_policies[0].entry_behavior, "primary_profile");
     EXPECT_EQ(profiles.count("primary_profile"), 1);
     EXPECT_EQ(profiles.at("primary_profile").planner.max_planning_time_ms, 200);
     EXPECT_FALSE(profiles.at("primary_profile").planner.only_forward_path);
@@ -298,4 +310,46 @@ TEST_F(PlannerBehaviorParserTest, ThrowsWhenSchemaNodeIsMissing) {
 
     EXPECT_THROW(PlannerBehaviorParser::parse("no_schema_behaviors.yaml"), std::runtime_error);
     std::remove("no_schema_behaviors.yaml");
+}
+
+TEST_F(PlannerBehaviorParserTest, ThrowsWhenTransitionUsesUnsupportedZoneType) {
+    std::ofstream invalid_transition("invalid_transition_zone_type.yaml");
+    invalid_transition
+        << schemaSectionYaml()
+        << "transitions:\n"
+        << "  - from_zone_type: UnknownZone\n"
+        << "    to_zone_type: TrackMainRoad\n"
+        << "    entry_behavior: primary_profile\n"
+        << "    min_depth_m: 1.0\n"
+        << "    max_depth_m: 6.0\n"
+        << "    lane_distance_threshold_m: 0.75\n"
+        << "    heading_error_threshold_deg: 20.0\n"
+        << validBehaviorYaml().substr(validBehaviorYaml().find("behaviors:\n"));
+    invalid_transition.close();
+
+    EXPECT_THROW(
+        PlannerBehaviorParser::parse("invalid_transition_zone_type.yaml"),
+        std::runtime_error);
+    std::remove("invalid_transition_zone_type.yaml");
+}
+
+TEST_F(PlannerBehaviorParserTest, ThrowsWhenTransitionUsesUnknownEntryBehavior) {
+    std::ofstream invalid_transition("invalid_transition_behavior.yaml");
+    invalid_transition
+        << schemaSectionYaml()
+        << "transitions:\n"
+        << "  - from_zone_type: ManeuveringZone\n"
+        << "    to_zone_type: TrackMainRoad\n"
+        << "    entry_behavior: missing_profile\n"
+        << "    min_depth_m: 1.0\n"
+        << "    max_depth_m: 6.0\n"
+        << "    lane_distance_threshold_m: 0.75\n"
+        << "    heading_error_threshold_deg: 20.0\n"
+        << validBehaviorYaml().substr(validBehaviorYaml().find("behaviors:\n"));
+    invalid_transition.close();
+
+    EXPECT_THROW(
+        PlannerBehaviorParser::parse("invalid_transition_behavior.yaml"),
+        std::runtime_error);
+    std::remove("invalid_transition_behavior.yaml");
 }

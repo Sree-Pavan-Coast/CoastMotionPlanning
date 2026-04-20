@@ -8,6 +8,15 @@
 namespace coastmotionplanning {
 namespace planning {
 
+namespace {
+
+std::string transitionKey(const std::string& from_zone_type,
+                          const std::string& to_zone_type) {
+    return from_zone_type + "->" + to_zone_type;
+}
+
+} // namespace
+
 PlannerBehaviorSet PlannerBehaviorSet::loadFromFile(const std::string& filepath) {
     const auto config_file = config::PlannerBehaviorParser::parse(filepath);
 
@@ -18,6 +27,13 @@ PlannerBehaviorSet PlannerBehaviorSet::loadFromFile(const std::string& filepath)
         behavior_set.profiles_.emplace(entry.first, entry.second);
     }
     std::sort(behavior_set.names_.begin(), behavior_set.names_.end());
+    behavior_set.transition_policies_ = config_file.transition_policies;
+    for (size_t index = 0; index < behavior_set.transition_policies_.size(); ++index) {
+        const auto& policy = behavior_set.transition_policies_[index];
+        behavior_set.transition_policy_indices_.emplace(
+            transitionKey(policy.from_zone_type, policy.to_zone_type),
+            index);
+    }
 
     if (behavior_set.names_.empty()) {
         throw std::runtime_error(
@@ -37,6 +53,17 @@ const PlannerBehaviorProfile& PlannerBehaviorSet::get(const std::string& behavio
         throw std::runtime_error("Planner behavior '" + behavior_name + "' is not defined.");
     }
     return it->second;
+}
+
+const ZoneTypeTransitionPolicy* PlannerBehaviorSet::findTransitionPolicy(
+    const std::string& from_zone_type,
+    const std::string& to_zone_type) const {
+    const auto it = transition_policy_indices_.find(
+        transitionKey(from_zone_type, to_zone_type));
+    if (it == transition_policy_indices_.end()) {
+        return nullptr;
+    }
+    return &transition_policies_[it->second];
 }
 
 void PlannerBehaviorSet::overrideMotionPrimitiveConstraints(double min_turning_radius_m,

@@ -6,6 +6,7 @@
 
 #include <grid_map_core/grid_map_core.hpp>
 #include "coastmotionplanning/common/profiling.hpp"
+#include "coastmotionplanning/costs/lane_centerline_layer.hpp"
 #include "coastmotionplanning/costs/costmap_types.hpp"
 #include "coastmotionplanning/geometry/shape_types.hpp"
 #include "coastmotionplanning/costs/non_holonomic_heuristic.hpp"
@@ -43,6 +44,7 @@ public:
     /// Build the full costmap for a planning query using a precomputed zone selection.
     grid_map::GridMap build(
         const ZoneSelectionResult& selection,
+        const math::Pose2d& start,
         const math::Pose2d& goal,
         const std::vector<geometry::Polygon2d>& obstacle_polygons = {});
 
@@ -57,6 +59,11 @@ public:
     /// Access the last-built costmap
     const grid_map::GridMap& getCostmap() const { return costmap_; }
 
+    /// Access the last-built directional track-lane guidance metadata.
+    const std::vector<TrackLaneGuidance>& getTrackLaneGuidance() const {
+        return track_lane_guidance_;
+    }
+
 private:
     CostmapConfig config_;
     std::vector<std::shared_ptr<zones::Zone>> all_zones_;
@@ -64,6 +71,7 @@ private:
     common::ProfilingCollector* profiler_{nullptr};
     NonHolonomicHeuristic nh_heuristic_;
     grid_map::GridMap costmap_;
+    std::vector<TrackLaneGuidance> track_lane_guidance_;
 };
 
 } // namespace costs

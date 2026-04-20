@@ -70,6 +70,7 @@ TEST_F(CostmapBuilderTest, BuildSameZone) {
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::LANE_CENTERLINE_COST));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::LANE_HEADING));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::LANE_DISTANCE));
+    EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::TRACK_STATION));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES));
     EXPECT_TRUE(costmap.exists(costs::CostmapLayerNames::COMBINED_COST));
 }
@@ -149,7 +150,7 @@ TEST_F(CostmapBuilderTest, DisconnectedZonesFailBeforeCostmapBuild) {
     EXPECT_THROW(builder.build(start, goal), std::runtime_error);
 }
 
-TEST_F(CostmapBuilderTest, LaneMetadataLayersEncodeDirectionalHeadingAndDistance) {
+TEST_F(CostmapBuilderTest, LaneMetadataPrefersForwardLaneTowardTrackGoal) {
     costs::CostmapBuilder builder(config, all_zones, *car);
 
     math::Pose2d start(0.0, 0.0, math::Angle::from_radians(0.0));
@@ -172,18 +173,79 @@ TEST_F(CostmapBuilderTest, LaneMetadataLayersEncodeDirectionalHeadingAndDistance
         costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, upper_lane_pos);
     const float centerline_distance =
         costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, centerline_pos);
+    const float track_station =
+        costmap.atPosition(costs::CostmapLayerNames::TRACK_STATION, centerline_pos);
     const float maneuver_heading =
         costmap.atPosition(costs::CostmapLayerNames::LANE_HEADING, maneuver_pos);
     const float maneuver_distance =
         costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, maneuver_pos);
+    const float maneuver_station =
+        costmap.atPosition(costs::CostmapLayerNames::TRACK_STATION, maneuver_pos);
 
     EXPECT_NEAR(lower_heading, 0.0f, 1e-3f);
     EXPECT_NEAR(upper_heading, 0.0f, 1e-3f);
-    EXPECT_NEAR(lower_distance, 1.0f, 0.051f);
-    EXPECT_NEAR(upper_distance, 1.0f, 0.051f);
-    EXPECT_LE(centerline_distance, 0.051f);
+    EXPECT_LE(lower_distance, 0.051f);
+    EXPECT_NEAR(upper_distance, 2.0f, 0.051f);
+    EXPECT_NEAR(centerline_distance, 1.0f, 0.051f);
+    EXPECT_NEAR(track_station, 10.0f, 0.051f);
     EXPECT_TRUE(std::isnan(maneuver_heading));
     EXPECT_TRUE(std::isinf(maneuver_distance));
+    EXPECT_TRUE(std::isnan(maneuver_station));
+}
+
+TEST_F(CostmapBuilderTest, LaneMetadataPrefersReverseLaneWhenGoalStationIsBehind) {
+    costs::CostmapBuilder builder(config, all_zones, *car);
+
+    math::Pose2d start(35.0, 2.5, math::Angle::from_degrees(180.0));
+    math::Pose2d goal(25.0, 2.5, math::Angle::from_degrees(180.0));
+
+    auto costmap = builder.build(start, goal);
+
+    const grid_map::Position lower_lane_pos(30.0, 1.5);
+    const grid_map::Position upper_lane_pos(30.0, 3.5);
+    const grid_map::Position centerline_pos(30.0, 2.5);
+
+    const float lower_heading =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_HEADING, lower_lane_pos);
+    const float upper_heading =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_HEADING, upper_lane_pos);
+    const float lower_distance =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, lower_lane_pos);
+    const float upper_distance =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, upper_lane_pos);
+    const float centerline_distance =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, centerline_pos);
+
+    EXPECT_LT(std::cos(lower_heading), -0.99f);
+    EXPECT_LT(std::cos(upper_heading), -0.99f);
+    EXPECT_NEAR(std::sin(lower_heading), 0.0f, 0.02f);
+    EXPECT_NEAR(std::sin(upper_heading), 0.0f, 0.02f);
+    EXPECT_NEAR(lower_distance, 2.0f, 0.051f);
+    EXPECT_LE(upper_distance, 0.051f);
+    EXPECT_NEAR(centerline_distance, 1.0f, 0.051f);
+}
+
+TEST_F(CostmapBuilderTest, CrossZoneTrackToManeuverUsesExitDirectionLaneMetadata) {
+    costs::CostmapBuilder builder(config, all_zones, *car);
+
+    math::Pose2d start(50.0, 2.5, math::Angle::from_degrees(180.0));
+    math::Pose2d goal(0.0, 0.0, math::Angle::from_radians(0.0));
+
+    auto costmap = builder.build(start, goal);
+
+    const grid_map::Position lower_lane_pos(30.0, 1.5);
+    const grid_map::Position upper_lane_pos(30.0, 3.5);
+    const float lower_distance =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, lower_lane_pos);
+    const float upper_distance =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_DISTANCE, upper_lane_pos);
+    const float upper_heading =
+        costmap.atPosition(costs::CostmapLayerNames::LANE_HEADING, upper_lane_pos);
+
+    EXPECT_NEAR(lower_distance, 2.0f, 0.051f);
+    EXPECT_LE(upper_distance, 0.051f);
+    EXPECT_LT(std::cos(upper_heading), -0.99f);
+    EXPECT_NEAR(std::sin(upper_heading), 0.0f, 0.02f);
 }
 
 TEST_F(CostmapBuilderTest, RebuildWithUpdatedObstaclePolygonsResetsDerivedLayers) {

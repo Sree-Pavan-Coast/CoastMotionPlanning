@@ -144,6 +144,22 @@ struct SearchContext {
     double analytic_step_size{0.0};
 };
 
+struct FrontierTrackLaneGuidanceRuntime {
+    bool enabled{false};
+    double target_station_m{0.0};
+    costs::TrackLaneGuidanceTargetKind target_kind{
+        costs::TrackLaneGuidanceTargetKind::Goal};
+    double relax_window_m{0.0};
+};
+
+struct TrackLaneRelaxationState {
+    bool active{false};
+    bool inside_relax_window{false};
+    double bias_scale{1.0};
+    double station_m{std::numeric_limits<double>::quiet_NaN()};
+    double distance_to_target_m{std::numeric_limits<double>::infinity()};
+};
+
 struct FrontierCounters {
     uint64_t expansions_popped{0};
     uint64_t stale_entries_skipped{0};
@@ -424,6 +440,7 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
                        const PlannerBehaviorProfile& profile,
                        const SearchNode& parent,
                        const grid_map::Position& successor_position,
+                       double lane_guidance_scale,
                        double successor_yaw_rad,
                        TurnDirection turn_direction,
                        double travel_m) {
@@ -456,7 +473,7 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
     }
 
     if (profile.isLayerActive(costs::CostmapLayerNames::LANE_CENTERLINE_COST)) {
-        edge_cost += travel_m * profile.planner.weight_lane_centerline *
+        edge_cost += travel_m * profile.planner.weight_lane_centerline * lane_guidance_scale *
             (readLayerCost(costmap,
                            costs::CostmapLayerNames::LANE_CENTERLINE_COST,
                            successor_position) / CostValues::LETHAL);
@@ -469,11 +486,61 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
             const double heading_error =
                 std::abs(normalizeAngleSigned(successor_yaw_rad - lane_heading));
             edge_cost +=
-                travel_m * profile.planner.lane_heading_bias_weight * heading_error;
+                travel_m * profile.planner.lane_heading_bias_weight *
+                lane_guidance_scale * heading_error;
         }
     }
 
     return edge_cost;
+}
+
+TrackLaneRelaxationState computeTrackLaneRelaxation(
+    const grid_map::GridMap& costmap,
+    const std::vector<FrontierTrackLaneGuidanceRuntime>& frontier_guidance,
+    size_t frontier_id,
+    const grid_map::Position& position) {
+    TrackLaneRelaxationState state;
+    if (frontier_id >= frontier_guidance.size()) {
+        return state;
+    }
+
+    const auto& guidance = frontier_guidance[frontier_id];
+    if (!guidance.enabled || !costmap.isInside(position) ||
+        !costmap.exists(costs::CostmapLayerNames::TRACK_STATION) ||
+        !costmap.exists(costs::CostmapLayerNames::ZONE_CONSTRAINTS)) {
+        return state;
+    }
+
+    const double zone_owner = readRawLayerValue(
+        costmap, costs::CostmapLayerNames::ZONE_CONSTRAINTS, position);
+    if (!std::isfinite(zone_owner) ||
+        std::abs(zone_owner - static_cast<double>(frontier_id)) >= 0.5) {
+        return state;
+    }
+
+    const double station = readRawLayerValue(
+        costmap, costs::CostmapLayerNames::TRACK_STATION, position);
+    if (!std::isfinite(station)) {
+        return state;
+    }
+
+    state.active = true;
+    state.station_m = station;
+    state.distance_to_target_m = std::abs(guidance.target_station_m - station);
+    if (guidance.relax_window_m <= common::EPSILON) {
+        return state;
+    }
+
+    if (state.distance_to_target_m > guidance.relax_window_m) {
+        return state;
+    }
+
+    state.inside_relax_window = true;
+    state.bias_scale = std::clamp(
+        state.distance_to_target_m / guidance.relax_window_m,
+        0.0,
+        1.0);
+    return state;
 }
 
 bool canChangeMotionDirection(const SearchNode& node,
@@ -955,7 +1022,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         initial_profile.makeCostmapConfig(), all_zones_, car_, profiler);
     const Clock::time_point costmap_start_time = Clock::now();
     grid_map::GridMap costmap =
-        builder.build(selection, request.goal, request.obstacle_polygons);
+        builder.build(selection, request.start, request.goal, request.obstacle_polygons);
     if (debug_trace != nullptr) {
         debug_trace->costmap_build_ms =
             elapsedMilliseconds(costmap_start_time, Clock::now());
@@ -1027,6 +1094,32 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         runtime->debug_summary.zone_name = zoneLabel(runtime->descriptor.zone);
         runtime->debug_summary.behavior_name = runtime->descriptor.behavior_name;
         frontier_runtimes.push_back(std::move(runtime));
+    }
+
+    std::vector<FrontierTrackLaneGuidanceRuntime> frontier_track_lane_guidance(
+        selection.frontiers.size());
+    for (const auto& guidance : builder.getTrackLaneGuidance()) {
+        if (guidance.frontier_id >= frontier_runtimes.size()) {
+            continue;
+        }
+
+        const SearchContext& guidance_context = *frontier_runtimes[guidance.frontier_id]->context;
+        const PlannerBehaviorProfile& guidance_profile = *guidance_context.profile;
+        FrontierTrackLaneGuidanceRuntime runtime_guidance;
+        runtime_guidance.enabled = true;
+        runtime_guidance.target_station_m = guidance.target_station;
+        runtime_guidance.target_kind = guidance.target_kind;
+        runtime_guidance.relax_window_m =
+            guidance.target_kind == costs::TrackLaneGuidanceTargetKind::Goal
+                ? std::max(
+                      guidance_profile.planner.min_goal_straight_approach_m,
+                      guidance_profile.planner.step_size_m)
+                : std::max({
+                      2.0 * guidance_profile.planner.step_size_m,
+                      guidance_profile.planner.max_cross_track_error_m,
+                      guidance_context.xy_resolution_m
+                  });
+        frontier_track_lane_guidance[guidance.frontier_id] = runtime_guidance;
     }
 
     const double global_max_same_motion_length_m =
@@ -1592,29 +1685,36 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             size_t forward_primitive_idx = projections.size();
             if (current_profile.planner.lane_primitive_suppression) {
                 const grid_map::Position current_position(current_node.pose.x, current_node.pose.y);
-                const double current_lane_distance = readRawLayerValue(
-                    costmap, costs::CostmapLayerNames::LANE_DISTANCE, current_position);
-                const double current_lane_heading = readRawLayerValue(
-                    costmap, costs::CostmapLayerNames::LANE_HEADING, current_position);
-                if (std::isfinite(current_lane_distance) &&
-                    std::isfinite(current_lane_heading) &&
-                    current_lane_distance < current_profile.planner.step_size_m) {
-                    const double heading_error = std::abs(normalizeAngleSigned(
-                        current_node.pose.theta.radians() - current_lane_heading));
-                    if (heading_error < (2.0 * current_context.yaw_bin_size_rad)) {
-                        const auto forward_it = std::find_if(
-                            projections.begin(),
-                            projections.end(),
-                            [](const auto& projection) {
-                                return projection.turn_dir == TurnDirection::FORWARD;
-                            });
-                        if (forward_it != projections.end()) {
-                            lane_following_node = true;
-                            forward_primitive_idx = static_cast<size_t>(
-                                std::distance(projections.begin(), forward_it));
-                            ++frontier.counters.lane_following_candidates;
-                            if (debug_trace != nullptr) {
-                                expansion_debug.lane_following_candidate = true;
+                const auto current_lane_relaxation = computeTrackLaneRelaxation(
+                    costmap,
+                    frontier_track_lane_guidance,
+                    current_node.frontier_id,
+                    current_position);
+                if (!current_lane_relaxation.inside_relax_window) {
+                    const double current_lane_distance = readRawLayerValue(
+                        costmap, costs::CostmapLayerNames::LANE_DISTANCE, current_position);
+                    const double current_lane_heading = readRawLayerValue(
+                        costmap, costs::CostmapLayerNames::LANE_HEADING, current_position);
+                    if (std::isfinite(current_lane_distance) &&
+                        std::isfinite(current_lane_heading) &&
+                        current_lane_distance < current_profile.planner.step_size_m) {
+                        const double heading_error = std::abs(normalizeAngleSigned(
+                            current_node.pose.theta.radians() - current_lane_heading));
+                        if (heading_error < (2.0 * current_context.yaw_bin_size_rad)) {
+                            const auto forward_it = std::find_if(
+                                projections.begin(),
+                                projections.end(),
+                                [](const auto& projection) {
+                                    return projection.turn_dir == TurnDirection::FORWARD;
+                                });
+                            if (forward_it != projections.end()) {
+                                lane_following_node = true;
+                                forward_primitive_idx = static_cast<size_t>(
+                                    std::distance(projections.begin(), forward_it));
+                                ++frontier.counters.lane_following_candidates;
+                                if (debug_trace != nullptr) {
+                                    expansion_debug.lane_following_candidate = true;
+                                }
                             }
                         }
                     }
@@ -1684,20 +1784,6 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     return false;
                 }
 
-                if (current_profile.planner.max_cross_track_error_m > 0.0) {
-                    const double lane_distance = readRawLayerValue(
-                        costmap, costs::CostmapLayerNames::LANE_DISTANCE, successor_position);
-                    if (std::isfinite(lane_distance) &&
-                        lane_distance > current_profile.planner.max_cross_track_error_m) {
-                        if (debug_trace != nullptr) {
-                            primitive_event.outcome = "cross_track_pruned";
-                            primitive_event.detail = "lane_distance_exceeded";
-                            recordPrimitiveEvent(std::move(primitive_event));
-                        }
-                        return false;
-                    }
-                }
-
                 const ResolvedPlannerBehavior resolved = [&]() {
                     common::ScopedProfilingTimer behavior_timer(
                         &frontier.profiling_collector, "planner.behavior_resolution");
@@ -1739,6 +1825,26 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                         recordPrimitiveEvent(std::move(primitive_event));
                     }
                     return false;
+                }
+
+                const auto successor_lane_relaxation = computeTrackLaneRelaxation(
+                    costmap,
+                    frontier_track_lane_guidance,
+                    resolved.frontier_id,
+                    successor_position);
+                if (resolved.profile->planner.max_cross_track_error_m > 0.0 &&
+                    !successor_lane_relaxation.inside_relax_window) {
+                    const double lane_distance = readRawLayerValue(
+                        costmap, costs::CostmapLayerNames::LANE_DISTANCE, successor_position);
+                    if (std::isfinite(lane_distance) &&
+                        lane_distance > resolved.profile->planner.max_cross_track_error_m) {
+                        if (debug_trace != nullptr) {
+                            primitive_event.outcome = "cross_track_pruned";
+                            primitive_event.detail = "lane_distance_exceeded";
+                            recordPrimitiveEvent(std::move(primitive_event));
+                        }
+                        return false;
+                    }
                 }
 
                 const float successor_lethal_threshold = static_cast<float>(
@@ -1799,6 +1905,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                         *resolved.profile,
                         current_node,
                         successor_position,
+                        successor_lane_relaxation.bias_scale,
                         successor_pose.theta.radians(),
                         projection.turn_dir,
                         travel_m);

@@ -50,15 +50,17 @@ grid_map::GridMap CostmapBuilder::build(const math::Pose2d& start,
     auto selection = selector.select(start, goal, all_zones_);
     recordTiming("costmap.zone_selection", t, profiler_);
 
-    auto costmap = build(selection, goal, obstacle_polygons);
+    auto costmap = build(selection, start, goal, obstacle_polygons);
     recordTiming("costmap.total_build", total_start, profiler_);
     return costmap;
 }
 
 grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
+                                        const math::Pose2d& start,
                                         const math::Pose2d& goal,
                                         const std::vector<geometry::Polygon2d>& obstacle_polygons) {
     auto t = Clock::now();
+    track_lane_guidance_.clear();
 
     // ---- Step 2: Create GridMap with geometry matching the search boundary ----
     // Compute bounding box of the search boundary
@@ -109,8 +111,13 @@ grid_map::GridMap CostmapBuilder::build(const ZoneSelectionResult& selection,
 
     // ---- Step 6: Lane Centerline ----
     t = Clock::now();
-    LaneCenterlineLayer::build(costmap_, selection.selected_zones,
-                                config_.max_lane_cost, config_.max_lane_half_width);
+    track_lane_guidance_ = LaneCenterlineLayer::build(
+        costmap_,
+        selection,
+        start,
+        goal,
+        config_.max_lane_cost,
+        config_.max_lane_half_width);
     recordTiming("costmap.lane_centerline_layer", t, profiler_);
 
     // ---- Step 7: Holonomic-with-Obstacles Heuristic ----

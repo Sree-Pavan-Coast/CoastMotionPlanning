@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -199,6 +200,52 @@ PlannerBehaviorSet loadBehaviorSetWithoutAnalyticExpansion(
         robot_name);
 }
 
+PlannerBehaviorSet loadCustomTrackRoadProfileBehaviorSet(
+    double min_goal_straight_approach_m,
+    bool disable_analytic_expansion,
+    const std::string& robot_name = "Pro_XD") {
+    const std::filesystem::path temp_dir =
+        std::filesystem::temp_directory_path() / "coastmotionplanning_hybrid_astar_test";
+    std::filesystem::create_directories(temp_dir);
+
+    std::string behaviors = readFile(repoPath("configs/planner_behaviors.yaml"));
+    replaceBehaviorProfileScalar(
+        behaviors,
+        "track_main_road_profile",
+        "min_goal_straight_approach_m",
+        std::to_string(min_goal_straight_approach_m));
+    replaceBehaviorProfileScalar(
+        behaviors,
+        "track_main_road_profile",
+        "max_planning_time_ms",
+        "5000");
+    replaceBehaviorProfileScalar(
+        behaviors,
+        "track_main_road_profile",
+        "only_forward_path",
+        "false");
+    if (disable_analytic_expansion) {
+        replaceBehaviorProfileScalar(
+            behaviors,
+            "track_main_road_profile",
+            "analytic_shot",
+            "false");
+        replaceBehaviorProfileScalar(
+            behaviors,
+            "track_main_road_profile",
+            "near_goal_analytic_expansion",
+            "false");
+    }
+
+    std::ofstream behavior_file(temp_dir / "planner_behaviors.yaml");
+    behavior_file << behaviors;
+    behavior_file.close();
+
+    return applyRobotConstraints(
+        PlannerBehaviorSet::loadFromFile((temp_dir / "planner_behaviors.yaml").string()),
+        robot_name);
+}
+
 double straightPrimitiveLengthM(const PlannerBehaviorProfile& profile) {
     coastmotionplanning::motion_primitives::MotionTableConfig motion_config;
     motion_config.minimum_turning_radius = static_cast<float>(
@@ -374,6 +421,59 @@ TEST(HybridAStarPlannerTest, SameZoneCarPlanningSucceeds) {
     EXPECT_EQ(result.behavior_sequence.front(), "primary_profile");
     EXPECT_EQ(result.behavior_sequence.back(), "primary_profile");
     EXPECT_EQ(result.segment_directions.size(), result.poses.size() - 1);
+}
+
+TEST(HybridAStarPlannerTest, TrackRoadProfileFollowsForwardLaneTowardGoalStation) {
+    const PlannerBehaviorSet behavior_set =
+        loadBehaviorSetWithoutAnalyticExpansion({"track_main_road_profile"});
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -6.0, 24.0, 6.0, "track_main_road_profile")
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(3.0, -3.0, 0.0);
+    request.goal = makePose(18.0, -3.0, 0.0);
+    request.initial_behavior_name = "track_main_road_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    ASSERT_GE(result.poses.size(), 2u);
+    const double mean_y = std::accumulate(
+        result.poses.begin(),
+        result.poses.end(),
+        0.0,
+        [](double sum, const Pose2d& pose) { return sum + pose.y; }) /
+        static_cast<double>(result.poses.size());
+    EXPECT_LT(mean_y, -1.0);
+}
+
+TEST(HybridAStarPlannerTest, TrackRoadGoalStraightApproachCanRelaxLaneBiasNearGoal) {
+    const PlannerBehaviorSet behavior_set =
+        loadCustomTrackRoadProfileBehaviorSet(1.0, false);
+    const Car car = makeCar();
+    std::vector<std::shared_ptr<coastmotionplanning::zones::Zone>> zones{
+        makeTrackZone(0.0, -6.0, 24.0, 6.0, "track_main_road_profile")
+    };
+
+    HybridAStarPlanner planner(car, zones, behavior_set);
+    HybridAStarPlannerRequest request;
+    request.start = makePose(3.0, -3.0, 0.0);
+    request.goal = makePose(18.0, -1.0, 0.0);
+    request.initial_behavior_name = "track_main_road_profile";
+
+    const auto result = planner.plan(request);
+
+    ASSERT_TRUE(result.success) << result.detail;
+    ASSERT_GE(result.poses.size(), 3u);
+    const bool used_lane_before_goal = std::any_of(
+        result.poses.begin() + 1,
+        result.poses.end() - 1,
+        [](const Pose2d& pose) { return pose.y < -2.5; });
+    EXPECT_TRUE(used_lane_before_goal);
+    EXPECT_NEAR(result.poses.back().y, -1.0, 0.25);
 }
 
 TEST(HybridAStarPlannerTest, DisconnectedCrossZonePlanningFailsBeforeSearch) {

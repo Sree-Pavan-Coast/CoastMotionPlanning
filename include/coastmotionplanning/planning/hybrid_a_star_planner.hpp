@@ -3,11 +3,13 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "coastmotionplanning/common/profiling.hpp"
 #include "coastmotionplanning/common/types.hpp"
+#include "coastmotionplanning/costs/costmap_builder.hpp"
 #include "coastmotionplanning/costs/dual_model_non_holonomic_heuristic.hpp"
 #include "coastmotionplanning/geometry/shape_types.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
@@ -97,6 +99,17 @@ struct PlannerFrontierHandoffDebugSummary {
     double first_transfer_ms{-1.0};
 };
 
+struct PlannerFrontierHeuristicDebugSummary {
+    size_t frontier_id{0};
+    std::string zone_name;
+    std::string objective_kind;
+    bool uses_holonomic_grid{true};
+    std::string target_mode;
+    std::string reason;
+    math::Pose2d target_pose;
+    size_t seed_count{0};
+};
+
 struct HybridAStarPlannerDebugTrace {
     std::string initial_behavior_name;
     std::string start_zone_name;
@@ -137,6 +150,7 @@ struct HybridAStarPlannerDebugTrace {
     std::vector<common::ProfilingScopeSummary> profiling_scopes;
     std::vector<PlannerFrontierDebugSummary> frontier_summaries;
     std::vector<PlannerFrontierHandoffDebugSummary> frontier_handoffs;
+    std::vector<PlannerFrontierHeuristicDebugSummary> frontier_heuristics;
     std::vector<PlannerExpansionDebugEvent> expansions;
 };
 
@@ -161,7 +175,8 @@ class HybridAStarPlanner {
 public:
     HybridAStarPlanner(const robot::Car& car,
                        std::vector<std::shared_ptr<zones::Zone>> all_zones,
-                       PlannerBehaviorSet behavior_set);
+                       PlannerBehaviorSet behavior_set,
+                       std::shared_ptr<const costs::MapLayerCache> map_layer_cache = nullptr);
 
     HybridAStarPlannerResult plan(const HybridAStarPlannerRequest& request) const;
 
@@ -175,6 +190,7 @@ private:
     const robot::Car& car_;
     std::vector<std::shared_ptr<zones::Zone>> all_zones_;
     PlannerBehaviorSet behavior_set_;
+    std::shared_ptr<const costs::MapLayerCache> map_layer_cache_;
 };
 
 } // namespace planning

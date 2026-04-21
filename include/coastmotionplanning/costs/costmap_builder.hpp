@@ -6,8 +6,9 @@
 
 #include <grid_map_core/grid_map_core.hpp>
 #include "coastmotionplanning/common/profiling.hpp"
-#include "coastmotionplanning/costs/lane_centerline_layer.hpp"
 #include "coastmotionplanning/costs/costmap_types.hpp"
+#include "coastmotionplanning/costs/lane_centerline_layer.hpp"
+#include "coastmotionplanning/costs/map_layer_cache.hpp"
 #include "coastmotionplanning/geometry/shape_types.hpp"
 #include "coastmotionplanning/costs/non_holonomic_heuristic.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
@@ -19,6 +20,16 @@ namespace costs {
 
 struct ZoneSelectionResult;
 
+struct PlanningGridBundle {
+    grid_map::GridMap guidance_grid;
+    grid_map::GridMap dynamic_grid;
+    grid_map::GridMap heuristic_grid;
+    std::vector<TrackLaneGuidance> track_lane_guidance;
+    double guidance_resolution_m{0.0};
+    double dynamic_resolution_m{0.0};
+    double heuristic_resolution_m{0.0};
+};
+
 /// Orchestrates the building of all costmap layers for a single planning query.
 /// Call build() once per planning iteration with the current start/goal.
 class CostmapBuilder {
@@ -29,7 +40,20 @@ public:
     CostmapBuilder(const CostmapConfig& config,
                    const std::vector<std::shared_ptr<zones::Zone>>& all_zones,
                    const robot::RobotBase& robot,
+                   const CostmapResolutionPolicy& resolution_policy = {},
+                   std::shared_ptr<const MapLayerCache> map_layer_cache = nullptr,
                    common::ProfilingCollector* profiler = nullptr);
+
+    PlanningGridBundle buildBundle(
+        const math::Pose2d& start,
+        const math::Pose2d& goal,
+        const std::vector<geometry::Polygon2d>& obstacle_polygons = {});
+
+    PlanningGridBundle buildBundle(
+        const ZoneSelectionResult& selection,
+        const math::Pose2d& start,
+        const math::Pose2d& goal,
+        const std::vector<geometry::Polygon2d>& obstacle_polygons = {});
 
     /// Build the full costmap for a planning query.
     /// @param start  Start pose
@@ -68,6 +92,9 @@ private:
     CostmapConfig config_;
     std::vector<std::shared_ptr<zones::Zone>> all_zones_;
     const robot::RobotBase& robot_;
+    CostmapResolutionPolicy resolution_policy_;
+    std::shared_ptr<const MapLayerCache> map_layer_cache_;
+    std::shared_ptr<MapLayerCache> owned_map_layer_cache_;
     common::ProfilingCollector* profiler_{nullptr};
     NonHolonomicHeuristic nh_heuristic_;
     grid_map::GridMap costmap_;

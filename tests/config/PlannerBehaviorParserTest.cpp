@@ -80,6 +80,15 @@ std::string validBehaviorYaml() {
         schemaSectionYaml() +
         "global:\n"
         "  debug_mode: true\n"
+        "  costmap_cache:\n"
+        "    guidance_resolutions_m: [0.05, 0.1, 0.2]\n"
+        "    heuristic_resolutions_m: [0.1, 0.2, 0.4]\n"
+        "    dynamic_resolutions_m: [0.05, 0.1, 0.2]\n"
+        "    guidance_max_cells: 2000000\n"
+        "    heuristic_max_cells: 1000000\n"
+        "    dynamic_max_cells: 2000000\n"
+        "    dynamic_window_size_x_m: 60.0\n"
+        "    dynamic_window_size_y_m: 60.0\n"
         "transitions:\n"
         "  - from_zone_type: ManeuveringZone\n"
         "    to_zone_type: TrackMainRoad\n"
@@ -256,6 +265,21 @@ TEST_F(PlannerBehaviorParserTest, ParsesProfilesThatMatchEmbeddedSchema) {
 
     ASSERT_EQ(profiles.size(), 1);
     EXPECT_TRUE(config_file.global.debug_mode);
+    EXPECT_EQ(
+        config_file.global.costmap_resolution_policy.guidance_resolutions_m.size(),
+        3u);
+    EXPECT_DOUBLE_EQ(
+        config_file.global.costmap_resolution_policy.guidance_resolutions_m.front(),
+        0.05);
+    EXPECT_DOUBLE_EQ(
+        config_file.global.costmap_resolution_policy.heuristic_resolutions_m.back(),
+        0.4);
+    EXPECT_EQ(
+        config_file.global.costmap_resolution_policy.dynamic_max_cells,
+        2000000u);
+    EXPECT_DOUBLE_EQ(
+        config_file.global.costmap_resolution_policy.dynamic_window_size_x_m,
+        60.0);
     ASSERT_EQ(config_file.transition_policies.size(), 1u);
     EXPECT_EQ(config_file.transition_policies[0].from_zone_type, "ManeuveringZone");
     EXPECT_EQ(config_file.transition_policies[0].to_zone_type, "TrackMainRoad");
@@ -292,6 +316,9 @@ TEST_F(PlannerBehaviorParserTest, DefaultsGlobalDebugModeToFalseWhenGlobalNodeIs
     const auto config_file = PlannerBehaviorParser::parse("no_global_behaviors.yaml");
 
     EXPECT_FALSE(config_file.global.debug_mode);
+    EXPECT_EQ(
+        config_file.global.costmap_resolution_policy.guidance_max_cells,
+        2000000u);
     std::remove("no_global_behaviors.yaml");
 }
 

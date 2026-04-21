@@ -59,6 +59,15 @@ schema:
 
 global:
   debug_mode: false
+  costmap_cache:
+    guidance_resolutions_m: [0.05, 0.1, 0.2]
+    heuristic_resolutions_m: [0.1, 0.2, 0.4]
+    dynamic_resolutions_m: [0.05, 0.1, 0.2]
+    guidance_max_cells: 2000000
+    heuristic_max_cells: 1000000
+    dynamic_max_cells: 2000000
+    dynamic_window_size_x_m: 60.0
+    dynamic_window_size_y_m: 60.0
 
 transitions:
   - from_zone_type: "ManeuveringZone"

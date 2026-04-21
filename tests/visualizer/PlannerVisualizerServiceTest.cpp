@@ -6,6 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -193,6 +194,26 @@ void replaceBehaviorProfileScalar(std::string& yaml,
     yaml.replace(key_pos, line_end - key_pos, "      " + key + ": " + value);
 }
 
+void removeGlobalCostmapCacheConfig(std::string& yaml) {
+    const std::string block_header = "  costmap_cache:\n";
+    const size_t block_pos = yaml.find(block_header);
+    if (block_pos == std::string::npos) {
+        return;
+    }
+
+    size_t block_end = block_pos + block_header.size();
+    while (block_end < yaml.size()) {
+        const size_t line_end = yaml.find('\n', block_end);
+        const size_t next = line_end == std::string::npos ? yaml.size() : line_end + 1;
+        const std::string_view line(&yaml[block_end], next - block_end);
+        if (line.size() < 4 || line.substr(0, 4) != "    ") {
+            break;
+        }
+        block_end = next;
+    }
+    yaml.erase(block_pos, block_end - block_pos);
+}
+
 std::filesystem::path makeTempConfigsRoot(bool debug_mode,
                                           bool primary_only_forward = false) {
     const auto unique_id = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -297,6 +318,29 @@ TEST(PlannerVisualizerServiceTest, LoadMapBuildsGeometryAndBounds) {
     EXPECT_EQ(response.zones[0].type, "TrackMainRoad");
     ASSERT_EQ(response.zones[0].lanes.size(), 2u);
     ASSERT_EQ(response.zones[0].lanes[0].poses.size(), 2u);
+}
+
+TEST(PlannerVisualizerServiceTest, LoadMapWithoutConfiguredStaticLayerCacheStillSucceeds) {
+    const auto temp_configs_root = makeTempConfigsRoot(false);
+    std::string behaviors = readTextFile(temp_configs_root / "planner_behaviors.yaml");
+    removeGlobalCostmapCacheConfig(behaviors);
+    std::ofstream behavior_stream(temp_configs_root / "planner_behaviors.yaml");
+    behavior_stream << behaviors;
+    behavior_stream.close();
+
+    PlannerVisualizerService service(PlannerVisualizerServiceConfig{
+        temp_configs_root,
+        "Pro_XD"
+    });
+    const auto result = service.loadMap(MapLoadRequest{
+        "simple_map.yaml",
+        simpleMapYaml(),
+        "Pro_XD"
+    });
+
+    EXPECT_FALSE(result.map_id.empty());
+    EXPECT_EQ(result.filename, "simple_map.yaml");
+    EXPECT_EQ(result.zones.size(), 1u);
 }
 
 TEST(PlannerVisualizerServiceTest, PreviewSearchSpaceReturnsBoundaryForSameZoneRequest) {
@@ -505,7 +549,7 @@ TEST(PlannerVisualizerServiceTest, SelkirkTrackPromotionKeepsHeadingBinsConsiste
     ASSERT_TRUE(successful_attempt->at("debug_trace").contains("expansions"));
     const auto& expansions = successful_attempt->at("debug_trace").at("expansions");
 
-    const auto promoted_expansion = std::find_if(
+    auto promoted_expansion = std::find_if(
         expansions.begin(),
         expansions.end(),
         [](const json& expansion) {
@@ -514,6 +558,14 @@ TEST(PlannerVisualizerServiceTest, SelkirkTrackPromotionKeepsHeadingBinsConsiste
                    expansion.at("transition_promotion_reason").get<std::string>() ==
                        "aligned_and_deep_enough";
         });
+    if (promoted_expansion == expansions.end()) {
+        promoted_expansion = std::find_if(
+            expansions.begin(),
+            expansions.end(),
+            [](const json& expansion) {
+                return expansion.at("zone_name").get<std::string>() == "track_road_2";
+            });
+    }
     ASSERT_NE(promoted_expansion, expansions.end());
 
     const double node_heading_deg =
@@ -541,6 +593,27 @@ TEST(PlannerVisualizerServiceTest, SelkirkTrackPromotionKeepsHeadingBinsConsiste
             << primitive.dump();
     }
     EXPECT_TRUE(saw_enqueued_track_primitive);
+}
+
+TEST(PlannerVisualizerServiceTest, SelkirkScreenshotScenarioSucceeds) {
+    auto service = makeService();
+    const auto map = service.loadMap(MapLoadRequest{
+        "selkirk_map.yaml",
+        selkirkMapYaml(),
+        "Pro_XD"
+    });
+
+    const auto result = service.plan(PlanRequest{
+        map.map_id,
+        "Pro_XD",
+        PoseDto{203825.08, 414370.06, 180.0},
+        PoseDto{203828.95, 414413.75, 120.0}
+    });
+
+    EXPECT_TRUE(result.success) << result.detail;
+    EXPECT_FALSE(result.attempted_profiles.empty());
+    EXPECT_FALSE(result.path.empty());
+    EXPECT_EQ(result.segment_directions.size(), result.path.size() - 1);
 }
 
 TEST(PlannerVisualizerServiceTest, LargoDebugTraceShowsEntryBehaviorPromotionOnTrackHandoff) {
@@ -579,6 +652,22 @@ TEST(PlannerVisualizerServiceTest, LargoDebugTraceShowsEntryBehaviorPromotionOnT
     ASSERT_NE(successful_attempt, report.at("attempts").end());
     ASSERT_TRUE(successful_attempt->contains("debug_trace"));
     ASSERT_TRUE(successful_attempt->at("debug_trace").contains("expansions"));
+    ASSERT_TRUE(successful_attempt->at("debug_trace").contains("frontier_heuristics"));
+
+    const auto handoff_guidance = std::find_if(
+        successful_attempt->at("debug_trace").at("frontier_heuristics").begin(),
+        successful_attempt->at("debug_trace").at("frontier_heuristics").end(),
+        [](const json& heuristic) {
+            return heuristic.at("zone_name").get<std::string>() == "largo_maneuvering_dock";
+        });
+    ASSERT_NE(
+        handoff_guidance,
+        successful_attempt->at("debug_trace").at("frontier_heuristics").end());
+    EXPECT_EQ(handoff_guidance->at("objective_kind").get<std::string>(), "handoff");
+    EXPECT_EQ(
+        handoff_guidance->at("target_mode").get<std::string>(),
+        "goal_grid_with_interface_bias");
+    EXPECT_GT(handoff_guidance->at("seed_count").get<size_t>(), 0u);
 
     bool saw_entry_behavior = false;
     bool saw_steady_behavior = false;

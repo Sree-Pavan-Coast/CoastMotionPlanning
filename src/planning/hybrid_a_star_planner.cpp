@@ -23,6 +23,7 @@
 #include <boost/geometry/algorithms/area.hpp>
 #include <boost/geometry/algorithms/correct.hpp>
 #include <boost/geometry/algorithms/intersection.hpp>
+#include <boost/geometry/algorithms/intersects.hpp>
 #include <boost/geometry/geometries/multi_linestring.hpp>
 #include <boost/geometry/geometries/multi_polygon.hpp>
 #include <grid_map_core/grid_map_core.hpp>
@@ -31,10 +32,12 @@
 #include "coastmotionplanning/common/math_constants.hpp"
 #include "coastmotionplanning/costs/costmap_builder.hpp"
 #include "coastmotionplanning/costs/costmap_types.hpp"
+#include "coastmotionplanning/costs/holonomic_obstacles_heuristic.hpp"
 #include "coastmotionplanning/costs/zone_selector.hpp"
 #include "coastmotionplanning/motion_primitives/car_motion_table.hpp"
 #include "coastmotionplanning/zones/maneuvering_zone.hpp"
 #include "coastmotionplanning/zones/track_main_road.hpp"
+#include "coastmotionplanning/zones/zone_type_utils.hpp"
 
 namespace coastmotionplanning {
 namespace planning {
@@ -60,6 +63,7 @@ constexpr double kTerminalStraightAlignmentToleranceRad = 5e-2;
 constexpr double kProjectionEpsilon = 1e-12;
 constexpr double kOverlapAreaTolerance = 1e-9;
 constexpr double kCandidateDedupTolerance = 1e-6;
+constexpr double kInterfaceGuidanceTieBreakWeight = 0.01;
 enum class TurnClass {
     UNKNOWN = 0,
     STRAIGHT,
@@ -136,14 +140,19 @@ struct DiscreteStateKeyHash {
 };
 
 struct OpenEntry {
+    double priority_f{0.0};
     double f{0.0};
     double h{0.0};
     double g{0.0};
+    double guidance_hint{0.0};
     uint64_t insertion_order{0};
     size_t node_index{0};
     DiscreteStateKey state_key{};
 
     bool operator>(const OpenEntry& other) const {
+        if (priority_f != other.priority_f) {
+            return priority_f > other.priority_f;
+        }
         if (f != other.f) {
             return f > other.f;
         }
@@ -177,6 +186,27 @@ struct FrontierTrackLaneGuidanceRuntime {
     costs::TrackLaneGuidanceTargetKind target_kind{
         costs::TrackLaneGuidanceTargetKind::Goal};
     double relax_window_m{0.0};
+};
+
+enum class FrontierGuidanceObjectiveKind {
+    Goal = 0,
+    Handoff
+};
+
+enum class FrontierHeuristicMode {
+    GoalGrid = 0,
+    InterfaceGrid,
+    DirectPoseFallback
+};
+
+struct FrontierGuidanceContextRuntime {
+    bool valid{false};
+    FrontierGuidanceObjectiveKind objective_kind{FrontierGuidanceObjectiveKind::Goal};
+    FrontierHeuristicMode heuristic_mode{FrontierHeuristicMode::GoalGrid};
+    math::Pose2d representative_pose;
+    std::vector<grid_map::Position> interface_seed_positions;
+    grid_map::Matrix interface_heuristic_field;
+    bool has_interface_heuristic_field{false};
 };
 
 struct TrackLaneRelaxationState {
@@ -268,6 +298,11 @@ double computeNextSameMotionRemainingToChange(
     common::MotionDirection successor_motion,
     double travel_m);
 bool isTerminalMotionSegmentValid(const SearchNode& node);
+double computeNonHolonomicHeuristic(const DualModelNonHolonomicHeuristic& heuristic,
+                                    HeuristicModel model,
+                                    const math::Pose2d& current_pose,
+                                    const math::Pose2d& target_pose,
+                                    common::ProfilingCollector* profiler = nullptr);
 
 double normalizeAngleSigned(double angle) {
     angle = std::fmod(angle + common::PI, common::TWO_PI);
@@ -476,6 +511,45 @@ void appendPolygonCandidates(std::vector<geometry::Point2d>& candidates,
     }
 }
 
+void appendClosestBridgeCandidates(std::vector<geometry::Point2d>& candidates,
+                                   const geometry::Polygon2d& current_polygon,
+                                   const geometry::Polygon2d& next_polygon) {
+    std::vector<geometry::Point2d> current_samples;
+    std::vector<geometry::Point2d> next_samples;
+    appendPolygonCandidates(current_samples, correctedPolygon(current_polygon));
+    appendPolygonCandidates(next_samples, correctedPolygon(next_polygon));
+    if (current_samples.empty() || next_samples.empty()) {
+        return;
+    }
+
+    double best_distance_sq = std::numeric_limits<double>::infinity();
+    geometry::Point2d best_current;
+    geometry::Point2d best_next;
+    for (const auto& current_sample : current_samples) {
+        for (const auto& next_sample : next_samples) {
+            const double distance_sq = squaredDistance(current_sample, next_sample);
+            if (distance_sq >= best_distance_sq) {
+                continue;
+            }
+            best_distance_sq = distance_sq;
+            best_current = current_sample;
+            best_next = next_sample;
+        }
+    }
+
+    if (!std::isfinite(best_distance_sq)) {
+        return;
+    }
+
+    appendUniqueCandidate(candidates, best_current);
+    appendUniqueCandidate(
+        candidates,
+        geometry::Point2d(
+            (best_current.x() + best_next.x()) * 0.5,
+            (best_current.y() + best_next.y()) * 0.5));
+    appendUniqueCandidate(candidates, best_next);
+}
+
 std::vector<geometry::Point2d> deriveHandoffCandidates(
     const geometry::Polygon2d& current_polygon,
     const geometry::Polygon2d& next_polygon) {
@@ -507,7 +581,82 @@ std::vector<geometry::Point2d> deriveHandoffCandidates(
         appendLineCandidates(candidates, line);
     }
 
+    if (candidates.empty()) {
+        appendClosestBridgeCandidates(candidates, current_polygon, next_polygon);
+    }
+
     return candidates;
+}
+
+std::vector<grid_map::Position> selectInterfaceSeedPositions(
+    const costs::SearchFrontierDescriptor& current_frontier,
+    const costs::SearchFrontierDescriptor& next_frontier,
+    const math::Pose2d& score_pose,
+    size_t max_seed_count = 8) {
+    if (current_frontier.zone == nullptr || next_frontier.zone == nullptr) {
+        return {};
+    }
+
+    auto candidates = deriveHandoffCandidates(
+        current_frontier.zone->getPolygon(),
+        next_frontier.zone->getPolygon());
+    if (candidates.empty()) {
+        return {};
+    }
+
+    const geometry::Point2d score_point(score_pose.x, score_pose.y);
+    std::stable_sort(
+        candidates.begin(),
+        candidates.end(),
+        [&](const auto& lhs, const auto& rhs) {
+            return squaredDistance(lhs, score_point) < squaredDistance(rhs, score_point);
+        });
+
+    std::vector<grid_map::Position> seeds;
+    seeds.reserve(std::min(max_seed_count, candidates.size()));
+    for (size_t idx = 0; idx < candidates.size() && seeds.size() < max_seed_count; ++idx) {
+        seeds.emplace_back(candidates[idx].x(), candidates[idx].y());
+    }
+    return seeds;
+}
+
+bool directGoalSegmentHitsHandoffRegion(const math::Pose2d& start_pose,
+                                        const math::Pose2d& goal_pose,
+                                        const geometry::Polygon2d& current_polygon,
+                                        const geometry::Polygon2d& next_polygon) {
+    geometry::LineString2d direct_segment;
+    direct_segment.push_back(geometry::Point2d(start_pose.x, start_pose.y));
+    direct_segment.push_back(geometry::Point2d(goal_pose.x, goal_pose.y));
+
+    MultiPolygon2d overlap;
+    geometry::bg::intersection(
+        correctedPolygon(current_polygon),
+        correctedPolygon(next_polygon),
+        overlap);
+    double overlap_area = 0.0;
+    for (const auto& polygon : overlap) {
+        overlap_area += std::abs(geometry::bg::area(polygon));
+    }
+    if (overlap_area > kOverlapAreaTolerance) {
+        for (const auto& polygon : overlap) {
+            if (geometry::bg::intersects(direct_segment, correctedPolygon(polygon))) {
+                return true;
+            }
+        }
+    }
+
+    MultiLineString2d shared_boundary;
+    geometry::bg::intersection(
+        boundaryLineString(correctedPolygon(current_polygon)),
+        boundaryLineString(correctedPolygon(next_polygon)),
+        shared_boundary);
+    for (const auto& line : shared_boundary) {
+        if (geometry::bg::intersects(direct_segment, line)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 std::optional<math::Pose2d> computeGoalDirectedTrackEntryPose(
@@ -734,6 +883,28 @@ std::string transitionPromotionReasonName(
     return "";
 }
 
+std::string frontierGuidanceObjectiveName(FrontierGuidanceObjectiveKind objective_kind) {
+    switch (objective_kind) {
+    case FrontierGuidanceObjectiveKind::Goal:
+        return "goal";
+    case FrontierGuidanceObjectiveKind::Handoff:
+        return "handoff";
+    }
+    return "goal";
+}
+
+std::string frontierHeuristicModeName(FrontierHeuristicMode mode) {
+    switch (mode) {
+    case FrontierHeuristicMode::GoalGrid:
+        return "goal_grid";
+    case FrontierHeuristicMode::InterfaceGrid:
+        return "interface_grid";
+    case FrontierHeuristicMode::DirectPoseFallback:
+        return "direct_pose_fallback";
+    }
+    return "goal_grid";
+}
+
 double readLayerCost(const grid_map::GridMap& costmap,
                      const std::string& layer,
                      const grid_map::Position& position) {
@@ -760,16 +931,42 @@ double readRawLayerValue(const grid_map::GridMap& costmap,
         layer, position, grid_map::InterpolationMethods::INTER_NEAREST));
 }
 
-double computeHolonomicHeuristic(const grid_map::GridMap& costmap,
+double computeHolonomicHeuristic(const costs::PlanningGridBundle& bundle,
                                  const grid_map::Position& position,
+                                 const FrontierGuidanceContextRuntime* guidance,
                                  common::ProfilingCollector* profiler = nullptr) {
     common::ScopedProfilingTimer timer(profiler, "planner.holonomic_heuristic_read");
-    if (!costmap.exists(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES) ||
-        !costmap.isInside(position)) {
+    if (guidance != nullptr && guidance->valid) {
+        switch (guidance->heuristic_mode) {
+        case FrontierHeuristicMode::DirectPoseFallback:
+            return std::hypot(
+                guidance->representative_pose.x - position.x(),
+                guidance->representative_pose.y - position.y());
+        case FrontierHeuristicMode::InterfaceGrid: {
+            if (!guidance->has_interface_heuristic_field || guidance->interface_heuristic_field.size() == 0) {
+                break;
+            }
+            grid_map::Index index;
+            if (!bundle.heuristic_grid.getIndex(position, index)) {
+                return LARGE_COST;
+            }
+            const float value = guidance->interface_heuristic_field(index(0), index(1));
+            if (std::isnan(value)) {
+                return LARGE_COST;
+            }
+            return static_cast<double>(value);
+        }
+        case FrontierHeuristicMode::GoalGrid:
+            break;
+        }
+    }
+
+    if (!bundle.heuristic_grid.exists(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES) ||
+        !bundle.heuristic_grid.isInside(position)) {
         return LARGE_COST;
     }
 
-    const float value = costmap.atPosition(
+    const float value = bundle.heuristic_grid.atPosition(
         costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES,
         position,
         grid_map::InterpolationMethods::INTER_NEAREST);
@@ -779,11 +976,72 @@ double computeHolonomicHeuristic(const grid_map::GridMap& costmap,
     return static_cast<double>(value);
 }
 
+double computePlannerHeuristic(
+    const costs::PlanningGridBundle& bundle,
+    const DualModelNonHolonomicHeuristic& heuristic,
+    HeuristicModel model,
+    const math::Pose2d& pose,
+    const math::Pose2d& fallback_target_pose,
+    const FrontierGuidanceContextRuntime* guidance,
+    common::ProfilingCollector* profiler = nullptr) {
+    const double holonomic_h = computeHolonomicHeuristic(
+        bundle,
+        grid_map::Position(pose.x, pose.y),
+        guidance,
+        profiler);
+
+    const FrontierHeuristicMode mode =
+        (guidance != nullptr && guidance->valid) ? guidance->heuristic_mode
+                                                 : FrontierHeuristicMode::GoalGrid;
+    if (mode == FrontierHeuristicMode::InterfaceGrid) {
+        return holonomic_h;
+    }
+
+    const math::Pose2d& nh_target =
+        (guidance != nullptr && guidance->valid)
+            ? guidance->representative_pose
+            : fallback_target_pose;
+    return std::max(
+        holonomic_h,
+        computeNonHolonomicHeuristic(
+            heuristic,
+            model,
+            pose,
+            nh_target,
+            profiler));
+}
+
+double computeFrontierGuidanceHint(
+    const costs::PlanningGridBundle& bundle,
+    const grid_map::Position& position,
+    const FrontierGuidanceContextRuntime* guidance) {
+    if (guidance == nullptr || !guidance->valid) {
+        return 0.0;
+    }
+
+    if (guidance->heuristic_mode != FrontierHeuristicMode::GoalGrid ||
+        !guidance->has_interface_heuristic_field ||
+        guidance->interface_heuristic_field.size() == 0) {
+        return 0.0;
+    }
+
+    {
+        grid_map::Index index;
+        if (bundle.heuristic_grid.getIndex(position, index)) {
+            const float value = guidance->interface_heuristic_field(index(0), index(1));
+            if (std::isfinite(value)) {
+                return static_cast<double>(value);
+            }
+        }
+    }
+    return 0.0;
+}
+
 double computeNonHolonomicHeuristic(const DualModelNonHolonomicHeuristic& heuristic,
                                     HeuristicModel model,
                                     const math::Pose2d& from,
                                     const math::Pose2d& goal,
-                                    common::ProfilingCollector* profiler = nullptr) {
+                                    common::ProfilingCollector* profiler) {
     common::ScopedProfilingTimer timer(profiler, "planner.non_holonomic_heuristic_lookup");
     const double dx_world = goal.x - from.x;
     const double dy_world = goal.y - from.y;
@@ -801,7 +1059,7 @@ double computeNonHolonomicHeuristic(const DualModelNonHolonomicHeuristic& heuris
         static_cast<float>(rel_theta));
 }
 
-double computeEdgeCost(const grid_map::GridMap& costmap,
+double computeEdgeCost(const costs::PlanningGridBundle& bundle,
                        const PlannerBehaviorProfile& profile,
                        const SearchNode& parent,
                        const grid_map::Position& successor_position,
@@ -833,20 +1091,34 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
     }
 
     if (profile.isLayerActive(costs::CostmapLayerNames::INFLATION)) {
-        edge_cost += travel_m * (readLayerCost(costmap, costs::CostmapLayerNames::INFLATION,
-                                               successor_position) / CostValues::LETHAL);
+        edge_cost +=
+            travel_m *
+            (readLayerCost(
+                 bundle.guidance_grid,
+                 costs::CostmapLayerNames::INFLATION,
+                 successor_position) /
+             CostValues::LETHAL);
+        edge_cost +=
+            travel_m *
+            (readLayerCost(
+                 bundle.dynamic_grid,
+                 costs::CostmapLayerNames::DYNAMIC_INFLATION,
+                 successor_position) /
+             CostValues::LETHAL);
     }
 
     if (profile.isLayerActive(costs::CostmapLayerNames::LANE_CENTERLINE_COST)) {
         edge_cost += travel_m * profile.planner.weight_lane_centerline * lane_guidance_scale *
-            (readLayerCost(costmap,
+            (readLayerCost(bundle.guidance_grid,
                            costs::CostmapLayerNames::LANE_CENTERLINE_COST,
                            successor_position) / CostValues::LETHAL);
     }
 
     if (profile.planner.lane_heading_bias_weight > 0.0) {
         const double lane_heading = readRawLayerValue(
-            costmap, costs::CostmapLayerNames::LANE_HEADING, successor_position);
+            bundle.guidance_grid,
+            costs::CostmapLayerNames::LANE_HEADING,
+            successor_position);
         if (std::isfinite(lane_heading)) {
             const double heading_error =
                 std::abs(normalizeAngleSigned(successor_yaw_rad - lane_heading));
@@ -860,7 +1132,7 @@ double computeEdgeCost(const grid_map::GridMap& costmap,
 }
 
 TrackLaneRelaxationState computeTrackLaneRelaxation(
-    const grid_map::GridMap& costmap,
+    const costs::PlanningGridBundle& bundle,
     const std::vector<FrontierTrackLaneGuidanceRuntime>& frontier_guidance,
     size_t frontier_id,
     const grid_map::Position& position) {
@@ -870,21 +1142,21 @@ TrackLaneRelaxationState computeTrackLaneRelaxation(
     }
 
     const auto& guidance = frontier_guidance[frontier_id];
-    if (!guidance.enabled || !costmap.isInside(position) ||
-        !costmap.exists(costs::CostmapLayerNames::TRACK_STATION) ||
-        !costmap.exists(costs::CostmapLayerNames::ZONE_CONSTRAINTS)) {
+    if (!guidance.enabled || !bundle.guidance_grid.isInside(position) ||
+        !bundle.guidance_grid.exists(costs::CostmapLayerNames::TRACK_STATION) ||
+        !bundle.guidance_grid.exists(costs::CostmapLayerNames::ZONE_CONSTRAINTS)) {
         return state;
     }
 
     const double zone_owner = readRawLayerValue(
-        costmap, costs::CostmapLayerNames::ZONE_CONSTRAINTS, position);
+        bundle.guidance_grid, costs::CostmapLayerNames::ZONE_CONSTRAINTS, position);
     if (!std::isfinite(zone_owner) ||
         std::abs(zone_owner - static_cast<double>(frontier_id)) >= 0.5) {
         return state;
     }
 
     const double station = readRawLayerValue(
-        costmap, costs::CostmapLayerNames::TRACK_STATION, position);
+        bundle.guidance_grid, costs::CostmapLayerNames::TRACK_STATION, position);
     if (!std::isfinite(station)) {
         return state;
     }
@@ -1245,10 +1517,12 @@ void mergeFrontierCountersIntoTrace(const FrontierCounters& counters,
 HybridAStarPlanner::HybridAStarPlanner(
     const robot::Car& car,
     std::vector<std::shared_ptr<zones::Zone>> all_zones,
-    PlannerBehaviorSet behavior_set)
+    PlannerBehaviorSet behavior_set,
+    std::shared_ptr<const costs::MapLayerCache> map_layer_cache)
     : car_(car),
       all_zones_(std::move(all_zones)),
-      behavior_set_(std::move(behavior_set)) {}
+      behavior_set_(std::move(behavior_set)),
+      map_layer_cache_(std::move(map_layer_cache)) {}
 
 HybridAStarPlannerResult HybridAStarPlanner::plan(
     const HybridAStarPlannerRequest& request) const {
@@ -1384,35 +1658,86 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     }
 
     costs::CostmapBuilder builder(
-        initial_profile.makeCostmapConfig(), all_zones_, car_, profiler);
+        initial_profile.makeCostmapConfig(),
+        all_zones_,
+        car_,
+        behavior_set_.globalConfig().costmap_resolution_policy,
+        map_layer_cache_,
+        profiler);
     const Clock::time_point costmap_start_time = Clock::now();
-    grid_map::GridMap costmap =
-        builder.build(selection, request.start, request.goal, request.obstacle_polygons);
+    costs::PlanningGridBundle costmap_bundle =
+        builder.buildBundle(selection, request.start, request.goal, request.obstacle_polygons);
+    const grid_map::GridMap& costmap = costmap_bundle.guidance_grid;
     if (debug_trace != nullptr) {
         debug_trace->costmap_build_ms =
             elapsedMilliseconds(costmap_start_time, Clock::now());
     }
 
     CollisionCheckerConfig default_collision_config;
-    default_collision_config.obstacle_layer = costs::CostmapLayerNames::COMBINED_COST;
+    default_collision_config.obstacle_layer = costs::CostmapLayerNames::STATIC_OBSTACLES;
     default_collision_config.lethal_threshold =
         static_cast<float>(initial_profile.collision_checker.lethal_threshold);
     CollisionChecker default_collision_checker(default_collision_config);
+    CollisionCheckerConfig dynamic_collision_config;
+    dynamic_collision_config.obstacle_layer = costs::CostmapLayerNames::DYNAMIC_OBSTACLES;
+    dynamic_collision_config.lethal_threshold =
+        static_cast<float>(initial_profile.collision_checker.lethal_threshold);
+    CollisionChecker dynamic_collision_checker(dynamic_collision_config);
+    const bool has_dynamic_obstacles = !request.obstacle_polygons.empty();
+
+    const auto checkCompositeCollision =
+        [&](const math::Pose2d& pose, float lethal_threshold, const std::string& profiling_scope) {
+            const robot::RobotState state = makeRobotState(pose);
+            const bool static_collision = [&]() {
+                common::ScopedProfilingTimer timer(profiler, profiling_scope + ".static");
+                if (std::abs(lethal_threshold - default_collision_config.lethal_threshold) <= 0.5f) {
+                    return default_collision_checker.checkCollision(
+                        costmap_bundle.guidance_grid, car_, state).in_collision;
+                }
+
+                CollisionCheckerConfig static_config = default_collision_config;
+                static_config.lethal_threshold = lethal_threshold;
+                CollisionChecker static_checker(static_config);
+                return static_checker.checkCollision(
+                    costmap_bundle.guidance_grid, car_, state).in_collision;
+            }();
+            if (static_collision) {
+                return true;
+            }
+            if (!has_dynamic_obstacles) {
+                return false;
+            }
+
+            const bool dynamic_collision = [&]() {
+                common::ScopedProfilingTimer timer(profiler, profiling_scope + ".dynamic");
+                if (std::abs(lethal_threshold - dynamic_collision_config.lethal_threshold) <= 0.5f) {
+                    return dynamic_collision_checker.checkCollision(
+                        costmap_bundle.dynamic_grid, car_, state).in_collision;
+                }
+
+                CollisionCheckerConfig dynamic_config = dynamic_collision_config;
+                dynamic_config.lethal_threshold = lethal_threshold;
+                CollisionChecker dynamic_checker(dynamic_config);
+                return dynamic_checker.checkCollision(
+                    costmap_bundle.dynamic_grid, car_, state).in_collision;
+            }();
+            return dynamic_collision;
+        };
 
     const bool start_in_collision = [&]() {
-        common::ScopedProfilingTimer timer(
-            profiler, "planner.collision_check.start_validation");
-        return default_collision_checker.checkCollision(
-            costmap, car_, makeRobotState(request.start)).in_collision;
+        return checkCompositeCollision(
+            request.start,
+            default_collision_config.lethal_threshold,
+            "planner.collision_check.start_validation");
     }();
     if (start_in_collision) {
         return failWithDetail("Start pose is in collision on the selected-zone costmap.");
     }
     const bool goal_in_collision = [&]() {
-        common::ScopedProfilingTimer timer(
-            profiler, "planner.collision_check.goal_validation");
-        return default_collision_checker.checkCollision(
-            costmap, car_, makeRobotState(request.goal)).in_collision;
+        return checkCompositeCollision(
+            request.goal,
+            default_collision_config.lethal_threshold,
+            "planner.collision_check.goal_validation");
     }();
     if (goal_in_collision) {
         return failWithDetail("Goal pose is in collision on the selected-zone costmap.");
@@ -1424,10 +1749,6 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         static_cast<float>(initial_profile.motion_primitives.min_turning_radius_m));
     if (!request.dual_model_lut_path.empty()) {
         heuristic.loadFromFile(request.dual_model_lut_path);
-    }
-    if (debug_trace != nullptr) {
-        debug_trace->heuristic_setup_ms =
-            elapsedMilliseconds(heuristic_setup_start_time, Clock::now());
     }
 
     std::unordered_map<std::string, SearchContext> contexts_by_behavior;
@@ -1484,6 +1805,185 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         frontier_track_lane_guidance[guidance.frontier_id] = runtime_guidance;
     }
 
+    std::vector<FrontierGuidanceContextRuntime> frontier_guidance_contexts(
+        selection.frontiers.size());
+    std::vector<PlannerFrontierHeuristicDebugSummary> frontier_heuristic_summaries;
+    frontier_heuristic_summaries.reserve(selection.frontiers.size());
+    for (size_t frontier_index = 0; frontier_index < selection.frontiers.size(); ++frontier_index) {
+        const auto& frontier = selection.frontiers[frontier_index];
+        const FrontierGuidanceObjectiveKind default_objective_kind =
+            frontier_index + 1 < selection.frontiers.size()
+                ? FrontierGuidanceObjectiveKind::Handoff
+                : FrontierGuidanceObjectiveKind::Goal;
+        PlannerFrontierHeuristicDebugSummary summary;
+        summary.frontier_id = frontier.frontier_id;
+        summary.zone_name = zoneLabel(frontier.zone);
+        summary.objective_kind = frontierGuidanceObjectiveName(default_objective_kind);
+        const FrontierHeuristicMode default_mode =
+            frontier_index + 1 < selection.frontiers.size()
+                ? FrontierHeuristicMode::GoalGrid
+                : FrontierHeuristicMode::GoalGrid;
+        summary.uses_holonomic_grid = default_mode != FrontierHeuristicMode::DirectPoseFallback;
+        summary.target_mode = frontierHeuristicModeName(default_mode);
+        summary.reason = "default";
+        summary.target_pose = request.goal;
+        summary.seed_count = 0;
+        frontier_heuristic_summaries.push_back(std::move(summary));
+        if (frontier.frontier_id < frontier_guidance_contexts.size()) {
+            frontier_guidance_contexts[frontier.frontier_id].valid = true;
+            frontier_guidance_contexts[frontier.frontier_id].objective_kind =
+                default_objective_kind;
+            frontier_guidance_contexts[frontier.frontier_id].heuristic_mode =
+                default_mode;
+            frontier_guidance_contexts[frontier.frontier_id].representative_pose = request.goal;
+        }
+    }
+    for (size_t frontier_index = 0; frontier_index + 1 < selection.frontiers.size();
+         ++frontier_index) {
+        const auto& current_frontier = selection.frontiers[frontier_index];
+        const auto& next_frontier = selection.frontiers[frontier_index + 1];
+        if (current_frontier.zone == nullptr || next_frontier.zone == nullptr ||
+            current_frontier.frontier_id >= frontier_guidance_contexts.size()) {
+            continue;
+        }
+
+        FrontierGuidanceContextRuntime& guidance =
+            frontier_guidance_contexts[current_frontier.frontier_id];
+        guidance.objective_kind = FrontierGuidanceObjectiveKind::Handoff;
+
+        const auto destination_track =
+            std::dynamic_pointer_cast<zones::TrackMainRoad>(next_frontier.zone);
+        if (destination_track == nullptr ||
+            next_frontier.frontier_id >= frontier_track_lane_guidance.size() ||
+            !frontier_track_lane_guidance[next_frontier.frontier_id].enabled) {
+            continue;
+        }
+
+        const auto* transition_policy = behavior_set_.findTransitionPolicy(
+            zones::zoneTypeName(current_frontier.zone),
+            zones::zoneTypeName(next_frontier.zone));
+        if (transition_policy == nullptr) {
+            continue;
+        }
+
+        const auto handoff_pose = computeGoalDirectedTrackEntryPose(
+            current_frontier.zone,
+            destination_track,
+            request.goal,
+            frontier_track_lane_guidance[next_frontier.frontier_id].target_station_m,
+            transition_policy->min_depth_m);
+        if (!handoff_pose.has_value()) {
+            continue;
+        }
+
+        if (current_frontier.frontier_id == selection.frontiers.front().frontier_id) {
+            const bool direct_line_hits_handoff = directGoalSegmentHitsHandoffRegion(
+                request.start,
+                request.goal,
+                current_frontier.zone->getPolygon(),
+                destination_track->getPolygon());
+            const auto interface_seeds = selectInterfaceSeedPositions(
+                current_frontier,
+                next_frontier,
+                *handoff_pose);
+            const double goal_bearing_rad = std::atan2(
+                request.goal.y - request.start.y,
+                request.goal.x - request.start.x);
+            const double goal_heading_delta_rad = std::abs(normalizeAngleSigned(
+                goal_bearing_rad - request.start.theta.radians()));
+            const double entry_heading_delta_rad = std::abs(normalizeAngleSigned(
+                handoff_pose->theta.radians() - request.start.theta.radians()));
+            const bool should_use_interface_bias =
+                !direct_line_hits_handoff &&
+                entry_heading_delta_rad <= (45.0 * common::DEG_TO_RAD) &&
+                entry_heading_delta_rad + (5.0 * common::DEG_TO_RAD) <
+                    goal_heading_delta_rad;
+            const bool should_use_direct_entry_pose =
+                !direct_line_hits_handoff &&
+                interface_seeds.empty() &&
+                goal_heading_delta_rad >= (90.0 * common::DEG_TO_RAD);
+            if (interface_seeds.empty() && !should_use_direct_entry_pose) {
+                continue;
+            }
+            guidance.valid = true;
+            guidance.representative_pose = *handoff_pose;
+            guidance.interface_seed_positions = interface_seeds;
+            if (!interface_seeds.empty()) {
+                guidance.heuristic_mode = should_use_interface_bias
+                    ? FrontierHeuristicMode::GoalGrid
+                    : FrontierHeuristicMode::InterfaceGrid;
+                guidance.interface_heuristic_field =
+                    costs::HolonomicObstaclesHeuristic::computeField(
+                        costmap_bundle.heuristic_grid,
+                        interface_seeds);
+                guidance.has_interface_heuristic_field =
+                    guidance.interface_heuristic_field.size() > 0;
+                if (!guidance.has_interface_heuristic_field) {
+                    guidance.heuristic_mode = FrontierHeuristicMode::DirectPoseFallback;
+                }
+            } else {
+                guidance.heuristic_mode = FrontierHeuristicMode::DirectPoseFallback;
+                guidance.has_interface_heuristic_field = false;
+            }
+
+            if (current_frontier.frontier_id < frontier_heuristic_summaries.size()) {
+                auto& summary = frontier_heuristic_summaries[current_frontier.frontier_id];
+                summary.objective_kind =
+                    frontierGuidanceObjectiveName(FrontierGuidanceObjectiveKind::Handoff);
+                summary.uses_holonomic_grid =
+                    guidance.heuristic_mode != FrontierHeuristicMode::DirectPoseFallback;
+                summary.target_mode =
+                    guidance.heuristic_mode == FrontierHeuristicMode::GoalGrid &&
+                        guidance.has_interface_heuristic_field
+                        ? "goal_grid_with_interface_bias"
+                        : frontierHeuristicModeName(guidance.heuristic_mode);
+                summary.reason = "track_frontier_handoff";
+                summary.target_pose = *handoff_pose;
+                summary.seed_count = interface_seeds.size();
+            }
+            continue;
+        }
+
+        const auto interface_seeds = selectInterfaceSeedPositions(
+            current_frontier,
+            next_frontier,
+            *handoff_pose);
+        guidance.valid = true;
+        guidance.representative_pose = *handoff_pose;
+        guidance.interface_seed_positions = interface_seeds;
+        if (!interface_seeds.empty()) {
+            guidance.heuristic_mode = FrontierHeuristicMode::InterfaceGrid;
+            guidance.interface_heuristic_field = costs::HolonomicObstaclesHeuristic::computeField(
+                costmap_bundle.heuristic_grid,
+                interface_seeds);
+            guidance.has_interface_heuristic_field =
+                guidance.interface_heuristic_field.size() > 0;
+            if (!guidance.has_interface_heuristic_field) {
+                guidance.heuristic_mode = FrontierHeuristicMode::DirectPoseFallback;
+            }
+        } else {
+            guidance.heuristic_mode = FrontierHeuristicMode::DirectPoseFallback;
+            guidance.has_interface_heuristic_field = false;
+        }
+
+        if (current_frontier.frontier_id < frontier_heuristic_summaries.size()) {
+            auto& summary = frontier_heuristic_summaries[current_frontier.frontier_id];
+            summary.objective_kind =
+                frontierGuidanceObjectiveName(FrontierGuidanceObjectiveKind::Handoff);
+            summary.uses_holonomic_grid =
+                guidance.heuristic_mode != FrontierHeuristicMode::DirectPoseFallback;
+            summary.target_mode = frontierHeuristicModeName(guidance.heuristic_mode);
+            summary.reason = "track_frontier_handoff";
+            summary.target_pose = *handoff_pose;
+            summary.seed_count = interface_seeds.size();
+        }
+    }
+    if (debug_trace != nullptr) {
+        debug_trace->frontier_heuristics = frontier_heuristic_summaries;
+        debug_trace->heuristic_setup_ms =
+            elapsedMilliseconds(heuristic_setup_start_time, Clock::now());
+    }
+
     const double global_max_same_motion_length_m =
         computeGlobalMaxSameMotionLength(behavior_set_);
     const auto deadline = Clock::now() + std::chrono::milliseconds(
@@ -1499,13 +1999,19 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
     const HeuristicModel start_model = allowsReverseMotion(*start_context.profile, start_zone)
         ? HeuristicModel::REEDS_SHEPP
         : HeuristicModel::DUBINS;
-    const double start_h = std::max(
-        computeHolonomicHeuristic(
-            costmap,
-            grid_map::Position(request.start.x, request.start.y),
-            profiler),
-        computeNonHolonomicHeuristic(
-            heuristic, start_model, request.start, request.goal, profiler));
+    const FrontierGuidanceContextRuntime* start_guidance_context =
+        selection.frontiers.empty() ||
+                selection.frontiers.front().frontier_id >= frontier_guidance_contexts.size()
+            ? nullptr
+            : &frontier_guidance_contexts[selection.frontiers.front().frontier_id];
+    const double start_h = computePlannerHeuristic(
+        costmap_bundle,
+        heuristic,
+        start_model,
+        request.start,
+        request.goal,
+        start_guidance_context,
+        profiler);
 
     std::deque<SearchNode> nodes;
     nodes.push_back(SearchNode{
@@ -1536,10 +2042,17 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         auto& start_frontier = *frontier_runtimes.front();
         std::lock_guard<std::mutex> lock(start_frontier.mutex);
         start_frontier.best_g_by_key.emplace(start_key, 0.0);
+        const double start_guidance_hint = computeFrontierGuidanceHint(
+            costmap_bundle,
+            grid_map::Position(request.start.x, request.start.y),
+            start_guidance_context);
         start_frontier.open_queue.push(OpenEntry{
+            nodes.front().g + nodes.front().h +
+                (kInterfaceGuidanceTieBreakWeight * start_guidance_hint),
             nodes.front().g + nodes.front().h,
             nodes.front().h,
             nodes.front().g,
+            start_guidance_hint,
             0,
             0,
             start_key
@@ -1651,10 +2164,20 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
         }
 
         frontier.best_g_by_key[successor_key] = new_g;
+        const FrontierGuidanceContextRuntime* destination_guidance =
+            destination_frontier_id < frontier_guidance_contexts.size()
+                ? &frontier_guidance_contexts[destination_frontier_id]
+                : nullptr;
+        const double guidance_hint = computeFrontierGuidanceHint(
+            costmap_bundle,
+            grid_map::Position(successor_node.pose.x, successor_node.pose.y),
+            destination_guidance);
         frontier.open_queue.push(OpenEntry{
+            new_g + successor_h + (kInterfaceGuidanceTieBreakWeight * guidance_hint),
             new_g + successor_h,
             successor_h,
             new_g,
+            guidance_hint,
             insertion_order.fetch_add(1),
             successor_index,
             successor_key
@@ -1756,6 +2279,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             wp_resolutions.push_back(current_resolution);
             for (size_t i = 1; i < waypoints.size(); ++i) {
                 const auto& wp = waypoints[i];
+                math::Pose2d wp_pose(wp[0], wp[1], math::Angle::from_radians(wp[2]));
                 robot::RobotState rs;
                 rs.x = wp[0];
                 rs.y = wp[1];
@@ -1769,10 +2293,10 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 }
 
                 const bool analytic_collision = [&]() {
-                    common::ScopedProfilingTimer collision_timer(
-                        &frontier.profiling_collector, "planner.collision_check.analytic");
-                    return default_collision_checker.checkCollision(
-                        costmap, car_, rs).in_collision;
+                    return checkCompositeCollision(
+                        wp_pose,
+                        default_collision_config.lethal_threshold,
+                        "planner.collision_check.analytic");
                 }();
                 if (analytic_collision) {
                     outcome.debug_event.outcome = "failed";
@@ -1780,14 +2304,13 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     return outcome;
                 }
 
-                math::Pose2d wp_pose(wp[0], wp[1], math::Angle::from_radians(wp[2]));
                 ResolvedPlannerBehavior resolved;
                 {
                     common::ScopedProfilingTimer behavior_timer(
                         &frontier.profiling_collector, "planner.behavior_resolution");
                     resolved = PlannerBehaviorResolver::resolve(
                         wp_pose,
-                        costmap,
+                        costmap_bundle.guidance_grid,
                         current_resolution.frontier_id,
                         current_resolution.zone,
                         current_resolution.behavior_name,
@@ -2092,15 +2615,19 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
             if (current_profile.planner.lane_primitive_suppression) {
                 const grid_map::Position current_position(current_node.pose.x, current_node.pose.y);
                 const auto current_lane_relaxation = computeTrackLaneRelaxation(
-                    costmap,
+                    costmap_bundle,
                     frontier_track_lane_guidance,
                     current_node.frontier_id,
                     current_position);
                 if (!current_lane_relaxation.inside_relax_window) {
                     const double current_lane_distance = readRawLayerValue(
-                        costmap, costs::CostmapLayerNames::LANE_DISTANCE, current_position);
+                        costmap_bundle.guidance_grid,
+                        costs::CostmapLayerNames::LANE_DISTANCE,
+                        current_position);
                     const double current_lane_heading = readRawLayerValue(
-                        costmap, costs::CostmapLayerNames::LANE_HEADING, current_position);
+                        costmap_bundle.guidance_grid,
+                        costs::CostmapLayerNames::LANE_HEADING,
+                        current_position);
                     if (std::isfinite(current_lane_distance) &&
                         std::isfinite(current_lane_heading) &&
                         current_lane_distance < current_profile.planner.step_size_m) {
@@ -2152,6 +2679,52 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     expansion_debug.primitive_events.push_back(std::move(primitive_event));
                 };
 
+            const auto hasForwardFrontierTransferCandidate =
+                [&](size_t destination_frontier_id) {
+                    for (const auto& candidate_projection : projections) {
+                        if (motionDirectionForPrimitive(candidate_projection.turn_dir) !=
+                            common::MotionDirection::Forward) {
+                            continue;
+                        }
+
+                        const unsigned int candidate_heading_bin =
+                            static_cast<unsigned int>(std::lround(candidate_projection.theta)) %
+                            current_context.motion_table.getNumAngleBins();
+                        math::Pose2d candidate_pose;
+                        candidate_pose.x = static_cast<double>(candidate_projection.x) *
+                            current_context.xy_resolution_m;
+                        candidate_pose.y = static_cast<double>(candidate_projection.y) *
+                            current_context.xy_resolution_m;
+                        candidate_pose.theta = math::Angle::from_radians(
+                            current_context.motion_table.getAngleFromBin(candidate_heading_bin));
+
+                        const grid_map::Position candidate_position(
+                            candidate_pose.x,
+                            candidate_pose.y);
+                        if (!costmap.isInside(candidate_position)) {
+                            continue;
+                        }
+
+                        const ResolvedPlannerBehavior candidate_resolved =
+                            PlannerBehaviorResolver::resolve(
+                                candidate_pose,
+                                costmap_bundle.guidance_grid,
+                                current_node.frontier_id,
+                                current_node.zone,
+                                current_node.behavior_name,
+                                selection.frontiers,
+                                behavior_set_,
+                                current_node.active_transition);
+                        if (candidate_resolved.profile == nullptr ||
+                            candidate_resolved.frontier_id != destination_frontier_id ||
+                            !isPrimitiveAllowed(candidate_projection.turn_dir, candidate_resolved)) {
+                            continue;
+                        }
+                        return true;
+                    }
+                    return false;
+                };
+
             const auto tryExpandPrimitive = [&](size_t primitive_idx) -> bool {
                 common::ScopedProfilingTimer primitive_timer(
                     &frontier.profiling_collector, "planner.primitive_expansion_attempt");
@@ -2163,6 +2736,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     static_cast<double>(current_context.motion_table.getTravelCost(
                         static_cast<unsigned int>(primitive_idx))) *
                     current_context.xy_resolution_m;
+                double successor_travel_m = travel_m;
 
                 math::Pose2d successor_pose;
                 successor_pose.x = static_cast<double>(projection.x) *
@@ -2190,12 +2764,12 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     return false;
                 }
 
-                const ResolvedPlannerBehavior resolved = [&]() {
+                ResolvedPlannerBehavior resolved = [&]() {
                     common::ScopedProfilingTimer behavior_timer(
                         &frontier.profiling_collector, "planner.behavior_resolution");
                     return PlannerBehaviorResolver::resolve(
                         successor_pose,
-                        costmap,
+                        costmap_bundle.guidance_grid,
                         current_node.frontier_id,
                         current_node.zone,
                         current_node.behavior_name,
@@ -2225,7 +2799,18 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     }
                     return false;
                 }
-                if (!isPrimitiveAllowed(projection.turn_dir, resolved)) {
+                const bool primitive_allowed = isPrimitiveAllowed(projection.turn_dir, resolved);
+                const bool reverse_track_handoff_override =
+                    !primitive_allowed &&
+                    motionDirectionForPrimitive(projection.turn_dir) ==
+                        common::MotionDirection::Reverse &&
+                    resolved.frontier_id != current_node.frontier_id &&
+                    resolved.active_transition.isActive() &&
+                    std::dynamic_pointer_cast<zones::TrackMainRoad>(resolved.zone) != nullptr &&
+                    std::isfinite(resolved.transition_lane_heading_error_rad) &&
+                    resolved.transition_lane_heading_error_rad >= (0.5 * common::PI) &&
+                    !hasForwardFrontierTransferCandidate(resolved.frontier_id);
+                if (!primitive_allowed && !reverse_track_handoff_override) {
                     if (debug_trace != nullptr) {
                         primitive_event.outcome = "primitive_disallowed";
                         primitive_event.detail = "primitive_not_allowed_for_behavior";
@@ -2234,7 +2819,6 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     return false;
                 }
 
-                double successor_travel_m = travel_m;
                 if (resolved.frontier_id != current_node.frontier_id &&
                     resolved.active_transition.isActive()) {
                     const auto destination_track =
@@ -2270,14 +2854,16 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                 }
 
                 const auto successor_lane_relaxation = computeTrackLaneRelaxation(
-                    costmap,
+                    costmap_bundle,
                     frontier_track_lane_guidance,
                     resolved.frontier_id,
                     successor_position);
                 if (resolved.profile->planner.max_cross_track_error_m > 0.0 &&
                     !successor_lane_relaxation.inside_relax_window) {
                     const double lane_distance = readRawLayerValue(
-                        costmap, costs::CostmapLayerNames::LANE_DISTANCE, successor_position);
+                        costmap_bundle.guidance_grid,
+                        costs::CostmapLayerNames::LANE_DISTANCE,
+                        successor_position);
                     if (std::isfinite(lane_distance) &&
                         lane_distance > resolved.profile->planner.max_cross_track_error_m) {
                         if (debug_trace != nullptr) {
@@ -2293,15 +2879,11 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     resolved.profile->collision_checker.lethal_threshold);
                 if (std::abs(successor_lethal_threshold -
                              default_collision_config.lethal_threshold) > 0.5f) {
-                    CollisionCheckerConfig adjusted_config = default_collision_config;
-                    adjusted_config.lethal_threshold = successor_lethal_threshold;
-                    CollisionChecker adjusted_checker(adjusted_config);
                     const bool in_collision = [&]() {
-                        common::ScopedProfilingTimer collision_timer(
-                            &frontier.profiling_collector,
+                        return checkCompositeCollision(
+                            successor_pose,
+                            successor_lethal_threshold,
                             "planner.collision_check.primitive_adjusted_threshold");
-                        return adjusted_checker.checkCollision(
-                            costmap, car_, makeRobotState(successor_pose)).in_collision;
                     }();
                     if (in_collision) {
                         if (debug_trace != nullptr) {
@@ -2313,11 +2895,10 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     }
                 } else {
                     const bool in_collision = [&]() {
-                        common::ScopedProfilingTimer collision_timer(
-                            &frontier.profiling_collector,
+                        return checkCompositeCollision(
+                            successor_pose,
+                            default_collision_config.lethal_threshold,
                             "planner.collision_check.primitive_default");
-                        return default_collision_checker.checkCollision(
-                            costmap, car_, makeRobotState(successor_pose)).in_collision;
                     }();
                     if (in_collision) {
                         if (debug_trace != nullptr) {
@@ -2343,7 +2924,7 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                     common::ScopedProfilingTimer edge_cost_timer(
                         &frontier.profiling_collector, "planner.edge_cost");
                     return computeEdgeCost(
-                        costmap,
+                        costmap_bundle,
                         *resolved.profile,
                         current_node,
                         successor_position,
@@ -2377,16 +2958,16 @@ HybridAStarPlannerResult HybridAStarPlanner::plan(
                             normalizeAngleUnsigned(successor_pose.theta.radians()));
                 }
 
-                const double holonomic_h =
-                    computeHolonomicHeuristic(
-                        costmap, successor_position, &frontier.profiling_collector);
-                const double nh_h = computeNonHolonomicHeuristic(
+                const double successor_h = computePlannerHeuristic(
+                    costmap_bundle,
                     heuristic,
                     selectHeuristicModel(resolved),
                     successor_pose,
                     request.goal,
+                    resolved.frontier_id < frontier_guidance_contexts.size()
+                        ? &frontier_guidance_contexts[resolved.frontier_id]
+                        : nullptr,
                     &frontier.profiling_collector);
-                const double successor_h = std::max(holonomic_h, nh_h);
 
                 SearchNode successor_node;
                 successor_node.pose = successor_pose;

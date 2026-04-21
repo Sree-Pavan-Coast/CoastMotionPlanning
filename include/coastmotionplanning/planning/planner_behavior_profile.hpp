@@ -11,6 +11,7 @@ namespace planning {
 
 struct PlannerBehaviorGlobalConfig {
     bool debug_mode{false};
+    costs::CostmapResolutionPolicy costmap_resolution_policy;
 };
 
 struct PlannerBehaviorPlannerConfig {

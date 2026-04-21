@@ -171,6 +171,43 @@ PoseDto poseFromJson(const json& root, const std::string& field_name) {
     };
 }
 
+std::vector<std::vector<PointDto>> polygonsFromJson(const json& root,
+                                                    const std::string& field_name) {
+    std::vector<std::vector<PointDto>> polygons;
+    if (!root.contains(field_name)) {
+        return polygons;
+    }
+
+    const auto& polygon_array = root.at(field_name);
+    if (!polygon_array.is_array()) {
+        throw std::runtime_error(
+            "Request field '" + field_name + "' must be an array of polygons.");
+    }
+
+    for (const auto& polygon_node : polygon_array) {
+        if (!polygon_node.is_array()) {
+            throw std::runtime_error(
+                "Each polygon in '" + field_name + "' must be an array of points.");
+        }
+        std::vector<PointDto> polygon;
+        for (const auto& point_node : polygon_node) {
+            if (!point_node.is_object() ||
+                !point_node.contains("x") || !point_node.at("x").is_number() ||
+                !point_node.contains("y") || !point_node.at("y").is_number()) {
+                throw std::runtime_error(
+                    "Dynamic obstacle polygons must contain numeric x/y points.");
+            }
+            polygon.push_back(PointDto{
+                point_node.at("x").get<double>(),
+                point_node.at("y").get<double>()
+            });
+        }
+        polygons.push_back(std::move(polygon));
+    }
+
+    return polygons;
+}
+
 } // namespace
 
 PlannerVisualizerServer::PlannerVisualizerServer(
@@ -305,7 +342,8 @@ void PlannerVisualizerServer::registerRoutes() {
                 body.value("map_id", std::string{}),
                 body.value("robot_name", std::string{}),
                 poseFromJson(body, "start"),
-                poseFromJson(body, "goal")
+                poseFromJson(body, "goal"),
+                polygonsFromJson(body, "dynamic_obstacle_polygons")
             });
             response.set_content(planResponseToJson(result).dump(), "application/json");
         } catch (const std::exception& e) {

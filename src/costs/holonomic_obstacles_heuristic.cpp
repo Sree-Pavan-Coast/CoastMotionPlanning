@@ -8,27 +8,21 @@
 namespace coastmotionplanning {
 namespace costs {
 
-void HolonomicObstaclesHeuristic::compute(
-    grid_map::GridMap& costmap,
-    const grid_map::Position& goal_position) {
-
+grid_map::Matrix HolonomicObstaclesHeuristic::computeField(
+    const grid_map::GridMap& costmap,
+    const std::vector<grid_map::Position>& seed_positions) {
     const double resolution = costmap.getResolution();
     const auto& size = costmap.getSize();
     const int rows = size(0);
     const int cols = size(1);
 
-    // Add the heuristic layer, initialized to NaN (unreachable by default)
-    costmap.add(CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES,
-                std::numeric_limits<float>::quiet_NaN());
-
-    auto& obstacle_data = costmap[CostmapLayerNames::STATIC_OBSTACLES];
-    auto& heuristic_data = costmap[CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES];
-
-    // Find the goal cell index
-    grid_map::Index goal_idx;
-    if (!costmap.getIndex(goal_position, goal_idx)) {
-        return;  // Goal is outside the map
+    grid_map::Matrix heuristic_data(rows, cols);
+    heuristic_data.setConstant(std::numeric_limits<float>::quiet_NaN());
+    if (!costmap.exists(CostmapLayerNames::STATIC_OBSTACLES)) {
+        return heuristic_data;
     }
+
+    const auto& obstacle_data = costmap[CostmapLayerNames::STATIC_OBSTACLES];
 
     // Distance grid
     Eigen::MatrixXf dist_grid(rows, cols);
@@ -42,11 +36,29 @@ void HolonomicObstaclesHeuristic::compute(
     };
     std::priority_queue<Cell, std::vector<Cell>, std::greater<Cell>> pq;
 
-    // Seed from goal
-    int goal_r = goal_idx(0);
-    int goal_c = goal_idx(1);
-    dist_grid(goal_r, goal_c) = 0.0f;
-    pq.push({0.0f, goal_r, goal_c});
+    bool seeded = false;
+    for (const auto& seed_position : seed_positions) {
+        grid_map::Index seed_idx;
+        if (!costmap.getIndex(seed_position, seed_idx)) {
+            continue;
+        }
+
+        const int seed_r = seed_idx(0);
+        const int seed_c = seed_idx(1);
+        if (obstacle_data(seed_r, seed_c) >= CostValues::LETHAL) {
+            continue;
+        }
+
+        if (dist_grid(seed_r, seed_c) <= 0.0f) {
+            continue;
+        }
+        dist_grid(seed_r, seed_c) = 0.0f;
+        pq.push({0.0f, seed_r, seed_c});
+        seeded = true;
+    }
+    if (!seeded) {
+        return heuristic_data;
+    }
 
     // 8-connected neighbors
     const int dx[] = {-1, -1, -1, 0, 0, 1, 1, 1};
@@ -92,6 +104,23 @@ void HolonomicObstaclesHeuristic::compute(
             // Cells still at max remain NaN (unreachable)
         }
     }
+
+    return heuristic_data;
+}
+
+void HolonomicObstaclesHeuristic::compute(
+    grid_map::GridMap& costmap,
+    const grid_map::Position& goal_position) {
+    compute(costmap, std::vector<grid_map::Position>{goal_position});
+}
+
+void HolonomicObstaclesHeuristic::compute(
+    grid_map::GridMap& costmap,
+    const std::vector<grid_map::Position>& seed_positions) {
+    costmap.add(CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES,
+                std::numeric_limits<float>::quiet_NaN());
+    costmap[CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES] =
+        computeField(costmap, seed_positions);
 }
 
 } // namespace costs

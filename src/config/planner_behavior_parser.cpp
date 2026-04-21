@@ -112,7 +112,7 @@ planning::PlannerBehaviorGlobalConfig PlannerBehaviorParser::parseGlobalConfig(
 
     for (const auto& entry : global_node) {
         const std::string key = entry.first.as<std::string>("");
-        if (key != "debug_mode") {
+        if (key != "debug_mode" && key != "costmap_cache") {
             throw std::runtime_error(
                 "Planner behavior file has unexpected global key '" + key + "'.");
         }
@@ -125,6 +125,120 @@ planning::PlannerBehaviorGlobalConfig PlannerBehaviorParser::parseGlobalConfig(
                 "Planner behavior file global.debug_mode must be a scalar.");
         }
         global_config.debug_mode = debug_mode.as<bool>();
+    }
+
+    const YAML::Node costmap_cache = global_node["costmap_cache"];
+    if (costmap_cache) {
+        if (!costmap_cache.IsMap()) {
+            throw std::runtime_error(
+                "Planner behavior file global.costmap_cache must be a map.");
+        }
+
+        for (const auto& entry : costmap_cache) {
+            const std::string key = entry.first.as<std::string>("");
+            if (key != "guidance_resolutions_m" &&
+                key != "heuristic_resolutions_m" &&
+                key != "dynamic_resolutions_m" &&
+                key != "guidance_max_cells" &&
+                key != "heuristic_max_cells" &&
+                key != "dynamic_max_cells" &&
+                key != "dynamic_window_size_x_m" &&
+                key != "dynamic_window_size_y_m") {
+                throw std::runtime_error(
+                    "Planner behavior file has unexpected global.costmap_cache key '" + key + "'.");
+            }
+        }
+
+        const auto parsePositiveResolutionSequence =
+            [&](const char* key, std::vector<double>& output) {
+                const YAML::Node node = costmap_cache[key];
+                if (!node) {
+                    return;
+                }
+                if (!node.IsSequence()) {
+                    throw std::runtime_error(
+                        std::string("Planner behavior file global.costmap_cache.") + key +
+                        " must be a sequence.");
+                }
+                output.clear();
+                for (const auto& entry : node) {
+                    if (!entry.IsScalar()) {
+                        throw std::runtime_error(
+                            std::string("Planner behavior file global.costmap_cache.") + key +
+                            " entries must be scalars.");
+                    }
+                    const double value = entry.as<double>();
+                    if (!std::isfinite(value) || value <= 0.0) {
+                        throw std::runtime_error(
+                            std::string("Planner behavior file global.costmap_cache.") + key +
+                            " entries must be finite and positive.");
+                    }
+                    output.push_back(value);
+                }
+            };
+
+        parsePositiveResolutionSequence(
+            "guidance_resolutions_m",
+            global_config.costmap_resolution_policy.guidance_resolutions_m);
+        parsePositiveResolutionSequence(
+            "heuristic_resolutions_m",
+            global_config.costmap_resolution_policy.heuristic_resolutions_m);
+        parsePositiveResolutionSequence(
+            "dynamic_resolutions_m",
+            global_config.costmap_resolution_policy.dynamic_resolutions_m);
+
+        const auto parsePositiveSizeT = [&](const char* key, size_t& output) {
+            const YAML::Node node = costmap_cache[key];
+            if (!node) {
+                return;
+            }
+            if (!node.IsScalar()) {
+                throw std::runtime_error(
+                    std::string("Planner behavior file global.costmap_cache.") + key +
+                    " must be a scalar.");
+            }
+            const auto value = node.as<long long>();
+            if (value <= 0) {
+                throw std::runtime_error(
+                    std::string("Planner behavior file global.costmap_cache.") + key +
+                    " must be positive.");
+            }
+            output = static_cast<size_t>(value);
+        };
+        parsePositiveSizeT(
+            "guidance_max_cells",
+            global_config.costmap_resolution_policy.guidance_max_cells);
+        parsePositiveSizeT(
+            "heuristic_max_cells",
+            global_config.costmap_resolution_policy.heuristic_max_cells);
+        parsePositiveSizeT(
+            "dynamic_max_cells",
+            global_config.costmap_resolution_policy.dynamic_max_cells);
+
+        const auto parsePositiveDouble = [&](const char* key, double& output) {
+            const YAML::Node node = costmap_cache[key];
+            if (!node) {
+                return;
+            }
+            if (!node.IsScalar()) {
+                throw std::runtime_error(
+                    std::string("Planner behavior file global.costmap_cache.") + key +
+                    " must be a scalar.");
+            }
+            const double value = node.as<double>();
+            if (!std::isfinite(value) || value <= 0.0) {
+                throw std::runtime_error(
+                    std::string("Planner behavior file global.costmap_cache.") + key +
+                    " must be finite and positive.");
+            }
+            output = value;
+        };
+        parsePositiveDouble(
+            "dynamic_window_size_x_m",
+            global_config.costmap_resolution_policy.dynamic_window_size_x_m);
+        parsePositiveDouble(
+            "dynamic_window_size_y_m",
+            global_config.costmap_resolution_policy.dynamic_window_size_y_m);
     }
 
     return global_config;

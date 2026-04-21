@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace coastmotionplanning {
 namespace costs {
@@ -23,12 +25,15 @@ struct CostValues {
 
 namespace CostmapLayerNames {
     constexpr const char* STATIC_OBSTACLES           = "static_obstacles";
+    constexpr const char* STATIC_DISTANCE            = "static_distance";
     constexpr const char* INFLATION                  = "inflation";
     constexpr const char* ZONE_CONSTRAINTS           = "zone_constraints";
     constexpr const char* LANE_CENTERLINE_COST       = "lane_centerline_cost";
     constexpr const char* LANE_HEADING               = "lane_heading";
     constexpr const char* LANE_DISTANCE              = "lane_distance";
     constexpr const char* TRACK_STATION              = "track_station";
+    constexpr const char* DYNAMIC_OBSTACLES         = "dynamic_obstacles";
+    constexpr const char* DYNAMIC_INFLATION         = "dynamic_inflation";
     constexpr const char* HOLONOMIC_WITH_OBSTACLES   = "holonomic_with_obstacles";
     constexpr const char* COMBINED_COST              = "combined_cost";
 } // namespace CostmapLayerNames
@@ -43,6 +48,17 @@ namespace CostmapLayerNames {
 
 struct ZoneConstraintValues {
     static constexpr float ZONE_NONE = 255.0f;       // Cell outside all operational zones (lethal)
+};
+
+struct CostmapResolutionPolicy {
+    std::vector<double> guidance_resolutions_m;
+    std::vector<double> heuristic_resolutions_m;
+    std::vector<double> dynamic_resolutions_m;
+    size_t guidance_max_cells{2000000};
+    size_t heuristic_max_cells{1000000};
+    size_t dynamic_max_cells{2000000};
+    double dynamic_window_size_x_m{60.0};
+    double dynamic_window_size_y_m{60.0};
 };
 
 // =============================================================================

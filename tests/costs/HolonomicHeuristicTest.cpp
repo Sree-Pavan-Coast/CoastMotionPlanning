@@ -68,6 +68,26 @@ TEST_F(HolonomicHeuristicTest, ObstacleCreatesLongerPath) {
     EXPECT_GT(heuristic, euclidean) << "Heuristic should be > Euclidean due to wall";
 }
 
+TEST_F(HolonomicHeuristicTest, MultiSeedFieldUsesClosestReachableSeed) {
+    const std::vector<grid_map::Position> seeds{
+        grid_map::Position(-4.0, 0.0),
+        grid_map::Position(4.0, 0.0)
+    };
+    const auto field = costs::HolonomicObstaclesHeuristic::computeField(costmap, seeds);
+
+    grid_map::Index left_idx;
+    ASSERT_TRUE(costmap.getIndex(seeds.front(), left_idx));
+    EXPECT_FLOAT_EQ(field(left_idx(0), left_idx(1)), 0.0f);
+
+    grid_map::Index right_idx;
+    ASSERT_TRUE(costmap.getIndex(seeds.back(), right_idx));
+    EXPECT_FLOAT_EQ(field(right_idx(0), right_idx(1)), 0.0f);
+
+    grid_map::Index near_right_idx;
+    ASSERT_TRUE(costmap.getIndex(grid_map::Position(3.8, 0.0), near_right_idx));
+    EXPECT_NEAR(field(near_right_idx(0), near_right_idx(1)), 0.2f, 0.2f);
+}
+
 TEST_F(HolonomicHeuristicTest, UnreachableCellIsNaN) {
     // Create a watertight enclosure by directly iterating grid indices.
     // Build a thick rectangular frame from row/col 50-55 and 145-150 (in a 200x200 grid)

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "coastmotionplanning/common/types.hpp"
+#include "coastmotionplanning/costs/map_layer_cache.hpp"
 #include "coastmotionplanning/config/robots_parser.hpp"
 #include "coastmotionplanning/costs/zone_selector.hpp"
 #include "coastmotionplanning/math/pose2d.hpp"
@@ -108,6 +109,7 @@ struct PlanRequest {
     std::string robot_name;
     PoseDto start;
     PoseDto goal;
+    std::vector<std::vector<PointDto>> dynamic_obstacle_polygons;
 };
 
 struct PlanResponse {
@@ -144,6 +146,7 @@ private:
         MapLoadResponse response;
         std::vector<std::shared_ptr<zones::Zone>> zones;
         costs::ZoneConnectivityIndex connectivity;
+        std::shared_ptr<costs::MapLayerCache> layer_cache;
     };
 
     static std::string extractMapName(const std::string& yaml_content,

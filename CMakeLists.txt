@@ -176,7 +176,9 @@ add_library(${PROJECT_NAME} STATIC
     src/collision_checking/collision_checker.cpp
     src/costs/zone_selector.cpp
     src/costs/static_obstacle_layer.cpp
+    src/costs/dynamic_obstacle_layer.cpp
     src/costs/inflation_layer.cpp
+    src/costs/map_layer_cache.cpp
     src/costs/zone_constraints_layer.cpp
     src/costs/lane_centerline_layer.cpp
     src/costs/holonomic_obstacles_heuristic.cpp

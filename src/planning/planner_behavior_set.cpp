@@ -89,5 +89,15 @@ void PlannerBehaviorSet::setMinimumPlanningTimeMs(int minimum_planning_time_ms) 
     }
 }
 
+double PlannerBehaviorSet::maxInflationRadiusM() const {
+    double max_inflation_radius_m = 0.0;
+    for (const auto& entry : profiles_) {
+        max_inflation_radius_m = std::max(
+            max_inflation_radius_m,
+            entry.second.costmap.inflation_radius_m);
+    }
+    return max_inflation_radius_m;
+}
+
 } // namespace planning
 } // namespace coastmotionplanning

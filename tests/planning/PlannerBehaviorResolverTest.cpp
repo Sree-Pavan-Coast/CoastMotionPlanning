@@ -146,6 +146,7 @@ coastmotionplanning::costs::ZoneSelectionResult buildSelection(
 
 TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
     const PlannerBehaviorSet behavior_set = loadBehaviorSet();
+    const auto& global = behavior_set.globalConfig();
 
     const auto& primary = behavior_set.get("primary_profile");
     const auto& parking = behavior_set.get("parking_profile");
@@ -177,6 +178,10 @@ TEST(PlannerBehaviorCatalogTest, LoadsTypedProfileValuesFromConfig) {
     EXPECT_DOUBLE_EQ(track.planner.lane_heading_bias_weight, 2.0);
     EXPECT_TRUE(track.planner.lane_primitive_suppression);
     EXPECT_TRUE(track.isLayerActive("lane_centerline_cost"));
+    EXPECT_EQ(global.costmap_resolution_policy.guidance_resolutions_m.size(), 3u);
+    EXPECT_DOUBLE_EQ(global.costmap_resolution_policy.guidance_resolutions_m.front(), 0.05);
+    EXPECT_DOUBLE_EQ(global.costmap_resolution_policy.heuristic_resolutions_m.back(), 0.4);
+    EXPECT_DOUBLE_EQ(global.costmap_resolution_policy.dynamic_window_size_x_m, 60.0);
 
     const auto* transition =
         behavior_set.findTransitionPolicy("ManeuveringZone", "TrackMainRoad");

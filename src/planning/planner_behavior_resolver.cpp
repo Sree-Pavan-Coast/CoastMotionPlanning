@@ -4,6 +4,7 @@
 
 #include "coastmotionplanning/common/math_constants.hpp"
 #include "coastmotionplanning/costs/costmap_types.hpp"
+#include "coastmotionplanning/costs/zone_selector.hpp"
 #include "coastmotionplanning/zones/zone_type_utils.hpp"
 
 namespace coastmotionplanning {
@@ -39,35 +40,44 @@ double normalizeAngleSigned(double angle) {
 FrontierConstraintLookup lookupFrontierConstraint(
     const math::Pose2d& successor_pose,
     const grid_map::GridMap& costmap,
-    size_t frontier_count) {
+    const std::vector<costs::SearchFrontierDescriptor>& frontiers) {
     FrontierConstraintLookup result;
 
-    if (!costmap.exists(costs::CostmapLayerNames::ZONE_CONSTRAINTS)) {
-        return result;
+    if (costmap.exists(costs::CostmapLayerNames::ZONE_CONSTRAINTS)) {
+        const grid_map::Position successor_position(successor_pose.x, successor_pose.y);
+        if (costmap.isInside(successor_position)) {
+            const float zone_value = costmap.atPosition(
+                costs::CostmapLayerNames::ZONE_CONSTRAINTS,
+                successor_position,
+                grid_map::InterpolationMethods::INTER_NEAREST);
+            if (std::isfinite(zone_value) &&
+                std::abs(zone_value - costs::ZoneConstraintValues::ZONE_NONE) >= 0.5f) {
+                const long frontier_id = std::lround(zone_value);
+                if (frontier_id >= 0 &&
+                    static_cast<size_t>(frontier_id) < frontiers.size() &&
+                    std::abs(zone_value - static_cast<float>(frontier_id)) < 0.5f) {
+                    result.kind = FrontierConstraintLookup::Kind::IndexedFrontier;
+                    result.frontier_id = static_cast<size_t>(frontier_id);
+                }
+            }
+        }
     }
 
-    const grid_map::Position successor_position(successor_pose.x, successor_pose.y);
-    if (!costmap.isInside(successor_position)) {
-        return result;
+    const geometry::Point2d point(successor_pose.x, successor_pose.y);
+    const costs::SearchFrontierDescriptor* exact_owner = nullptr;
+    for (const auto& frontier : frontiers) {
+        if (frontier.zone == nullptr) {
+            continue;
+        }
+        if (costs::ZoneSelector::isInsidePolygon(point, frontier.zone->getPolygon())) {
+            exact_owner = &frontier;
+        }
     }
-
-    const float zone_value = costmap.atPosition(
-        costs::CostmapLayerNames::ZONE_CONSTRAINTS,
-        successor_position,
-        grid_map::InterpolationMethods::INTER_NEAREST);
-    if (std::isnan(zone_value) ||
-        std::abs(zone_value - costs::ZoneConstraintValues::ZONE_NONE) < 0.5f) {
-        return result;
-    }
-
-    const long frontier_id = std::lround(zone_value);
-    if (frontier_id >= 0 &&
-        static_cast<size_t>(frontier_id) < frontier_count &&
-        std::abs(zone_value - static_cast<float>(frontier_id)) < 0.5f) {
+    if (exact_owner != nullptr) {
         result.kind = FrontierConstraintLookup::Kind::IndexedFrontier;
-        result.frontier_id = static_cast<size_t>(frontier_id);
+        result.frontier_id = exact_owner->frontier_id;
+        return result;
     }
-
     return result;
 }
 
@@ -169,7 +179,7 @@ ResolvedPlannerBehavior PlannerBehaviorResolver::resolve(
     const PlannerBehaviorSet& behavior_set,
     const ActiveZoneTransitionState& active_transition) {
     const FrontierConstraintLookup lookup =
-        lookupFrontierConstraint(successor_pose, costmap, frontiers.size());
+        lookupFrontierConstraint(successor_pose, costmap, frontiers);
 
     if (lookup.kind != FrontierConstraintLookup::Kind::IndexedFrontier) {
         return makeResolvedBehavior(

@@ -72,6 +72,23 @@ std::string readFile(const std::string& path) {
     return buffer.str();
 }
 
+void removeGlobalCostmapCacheBlock(std::string& yaml) {
+    const std::string cache_block =
+        "  costmap_cache:\n"
+        "    guidance_resolutions_m: [0.05, 0.1, 0.2]\n"
+        "    heuristic_resolutions_m: [0.1, 0.2, 0.4]\n"
+        "    dynamic_resolutions_m: [0.05, 0.1, 0.2]\n"
+        "    guidance_max_cells: 2000000\n"
+        "    heuristic_max_cells: 1000000\n"
+        "    dynamic_max_cells: 2000000\n"
+        "    dynamic_window_size_x_m: 60.0\n"
+        "    dynamic_window_size_y_m: 60.0\n";
+    const size_t cache_pos = yaml.find(cache_block);
+    if (cache_pos != std::string::npos) {
+        yaml.erase(cache_pos, cache_block.size());
+    }
+}
+
 PlannerBehaviorSet loadBehaviorSetWithDebugMode(bool debug_mode,
                                                 const std::string& robot_name = "Pro_XD") {
     const std::filesystem::path temp_dir =
@@ -172,6 +189,7 @@ PlannerBehaviorSet loadCustomPrimaryProfileBehaviorSet(bool only_forward_path,
             debug_mode_disabled.size(),
             "  debug_mode: true");
     }
+    removeGlobalCostmapCacheBlock(behaviors);
     replaceBehaviorProfileScalar(
         behaviors,
         "primary_profile",
@@ -212,6 +230,7 @@ PlannerBehaviorSet loadBehaviorSetWithoutAnalyticExpansion(
     std::filesystem::create_directories(temp_dir);
 
     std::string behaviors = readFile(repoPath("configs/planner_behaviors.yaml"));
+    removeGlobalCostmapCacheBlock(behaviors);
     for (const auto& profile_name : profile_names) {
         replaceBehaviorProfileScalar(behaviors, profile_name, "analytic_shot", "false");
         replaceBehaviorProfileScalar(

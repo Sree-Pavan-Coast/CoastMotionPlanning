@@ -28,6 +28,7 @@ public:
     void overrideMotionPrimitiveConstraints(double min_turning_radius_m,
                                             double max_steer_angle_rad);
     void setMinimumPlanningTimeMs(int minimum_planning_time_ms);
+    double maxInflationRadiusM() const;
     const std::vector<std::string>& names() const { return names_; }
 
 private:

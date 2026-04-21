@@ -1,5 +1,6 @@
 #include "coastmotionplanning/visualizer/planner_visualizer_service.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -134,6 +135,20 @@ json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace
         });
     }
 
+    json frontier_heuristics = json::array();
+    for (const auto& heuristic : trace.frontier_heuristics) {
+        frontier_heuristics.push_back(json{
+            {"frontier_id", heuristic.frontier_id},
+            {"zone_name", heuristic.zone_name},
+            {"objective_kind", heuristic.objective_kind},
+            {"uses_holonomic_grid", heuristic.uses_holonomic_grid},
+            {"target_mode", heuristic.target_mode},
+            {"reason", heuristic.reason},
+            {"target_pose", poseToJson(heuristic.target_pose)},
+            {"seed_count", heuristic.seed_count}
+        });
+    }
+
     json expansions = json::array();
     for (const auto& expansion : trace.expansions) {
         json primitive_events = json::array();
@@ -244,6 +259,7 @@ json plannerDebugTraceToJson(const planning::HybridAStarPlannerDebugTrace& trace
         }},
         {"frontier_summaries", frontier_summaries},
         {"frontier_handoffs", frontier_handoffs},
+        {"frontier_heuristics", frontier_heuristics},
         {"terminal_reason", trace.terminal_reason},
         {"expansions", expansions}
     };
@@ -312,6 +328,46 @@ std::vector<PointDto> polygonToPointDtos(const geometry::Polygon2d& polygon) {
         points.push_back(PointDto{ring[i].x(), ring[i].y()});
     }
     return points;
+}
+
+double maxCachedResolutionM(const costs::CostmapResolutionPolicy& resolution_policy) {
+    double max_resolution_m = 0.0;
+    const auto consume = [&](const std::vector<double>& values) {
+        for (double value : values) {
+            if (std::isfinite(value) && value > 0.0) {
+                max_resolution_m = std::max(max_resolution_m, value);
+            }
+        }
+    };
+    consume(resolution_policy.guidance_resolutions_m);
+    consume(resolution_policy.heuristic_resolutions_m);
+    consume(resolution_policy.dynamic_resolutions_m);
+    return max_resolution_m > 0.0 ? max_resolution_m : 0.1;
+}
+
+bool hasConfiguredStaticLayerCache(const costs::CostmapResolutionPolicy& resolution_policy) {
+    const auto has_positive = [](const std::vector<double>& values) {
+        return std::any_of(
+            values.begin(),
+            values.end(),
+            [](double value) { return std::isfinite(value) && value > 0.0; });
+    };
+    return has_positive(resolution_policy.guidance_resolutions_m) &&
+           has_positive(resolution_policy.heuristic_resolutions_m);
+}
+
+geometry::Polygon2d polygonFromPointDtos(const std::vector<PointDto>& points) {
+    geometry::Polygon2d polygon;
+    if (points.size() < 3) {
+        return polygon;
+    }
+
+    for (const auto& point : points) {
+        polygon.outer().push_back(geometry::Point2d(point.x, point.y));
+    }
+    polygon.outer().push_back(geometry::Point2d(points.front().x, points.front().y));
+    geometry::bg::correct(polygon);
+    return polygon;
 }
 
 RobotCatalogData loadRobotCatalog(const PlannerVisualizerServiceConfig& config) {
@@ -412,6 +468,14 @@ MapLoadResponse PlannerVisualizerService::loadMap(const MapLoadRequest& request)
     auto loaded_map = std::make_shared<LoadedMapState>();
     loaded_map->zones = zones;
     loaded_map->connectivity = costs::ZoneSelector::buildConnectivityIndex(zones);
+    if (hasConfiguredStaticLayerCache(base_behavior_set_.globalConfig().costmap_resolution_policy)) {
+        loaded_map->layer_cache = std::make_shared<costs::MapLayerCache>(
+            zones,
+            loaded_map->connectivity,
+            base_behavior_set_.globalConfig().costmap_resolution_policy,
+            base_behavior_set_.maxInflationRadiusM() +
+                maxCachedResolutionM(base_behavior_set_.globalConfig().costmap_resolution_policy));
+    }
     loaded_map->response.map_id = nextMapId();
     loaded_map->response.filename = request.filename;
     loaded_map->response.map_name = extractMapName(request.yaml, request.filename);
@@ -492,11 +556,22 @@ PlanResponse PlannerVisualizerService::plan(const PlanRequest& request) {
     planning::HybridAStarPlannerResult last_planner_result;
     std::vector<AttemptRecord> attempt_records;
     auto runner = [&](const planning::PlanningAttempt& attempt) {
-        planning::HybridAStarPlanner planner(car, loaded_map->zones, behavior_set);
+        planning::HybridAStarPlanner planner(
+            car,
+            loaded_map->zones,
+            behavior_set,
+            loaded_map->layer_cache);
         planning::HybridAStarPlannerRequest planner_request;
         planner_request.start = start_pose;
         planner_request.goal = goal_pose;
         planner_request.initial_behavior_name = attempt.profile;
+        planner_request.obstacle_polygons.reserve(request.dynamic_obstacle_polygons.size());
+        for (const auto& polygon_points : request.dynamic_obstacle_polygons) {
+            const auto polygon = polygonFromPointDtos(polygon_points);
+            if (polygon.outer().size() >= 4) {
+                planner_request.obstacle_polygons.push_back(polygon);
+            }
+        }
 
         last_planner_result = planner.plan(planner_request);
         attempt_records.push_back(AttemptRecord{attempt, last_planner_result});

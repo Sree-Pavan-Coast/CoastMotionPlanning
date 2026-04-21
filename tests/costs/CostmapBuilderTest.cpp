@@ -273,8 +273,10 @@ TEST_F(CostmapBuilderTest, RebuildWithUpdatedObstaclePolygonsResetsDerivedLayers
     const auto blocked_costmap = builder.build(start, goal, {blocking_wall});
     const float blocked_static =
         blocked_costmap.atPosition(costs::CostmapLayerNames::STATIC_OBSTACLES, wall_center);
-    const float blocked_inflation =
-        blocked_costmap.atPosition(costs::CostmapLayerNames::INFLATION, inflated_sample);
+    const float blocked_dynamic_obstacle =
+        blocked_costmap.atPosition(costs::CostmapLayerNames::DYNAMIC_OBSTACLES, wall_center);
+    const float blocked_dynamic_inflation =
+        blocked_costmap.atPosition(costs::CostmapLayerNames::DYNAMIC_INFLATION, inflated_sample);
     const float blocked_heuristic =
         blocked_costmap.atPosition(costs::CostmapLayerNames::HOLONOMIC_WITH_OBSTACLES, start_pos);
 
@@ -287,8 +289,9 @@ TEST_F(CostmapBuilderTest, RebuildWithUpdatedObstaclePolygonsResetsDerivedLayers
     EXPECT_FLOAT_EQ(baseline_static, costs::CostValues::FREE_SPACE);
     EXPECT_TRUE(std::isfinite(baseline_heuristic));
 
-    EXPECT_FLOAT_EQ(blocked_static, costs::CostValues::LETHAL);
-    EXPECT_GT(blocked_inflation, costs::CostValues::FREE_SPACE);
+    EXPECT_FLOAT_EQ(blocked_static, costs::CostValues::FREE_SPACE);
+    EXPECT_FLOAT_EQ(blocked_dynamic_obstacle, costs::CostValues::LETHAL);
+    EXPECT_GT(blocked_dynamic_inflation, costs::CostValues::FREE_SPACE);
     EXPECT_TRUE(std::isnan(blocked_heuristic));
 
     EXPECT_FLOAT_EQ(restored_static, costs::CostValues::FREE_SPACE);
